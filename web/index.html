@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MorphMimic live demo</title>
+    <meta
+      name="description"
+      content="One MorphMimic policy controlling the Unitree G1, AgiBot X2 Ultra and Booster T2,
+               simulated live in the browser with MuJoCo."
+    />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar" aria-label="Clips">
+        <h2 class="side-title">Clips</h2>
+        <ul id="clipList" class="clip-list"></ul>
+        <label class="clip-select">
+          <span>Clip</span>
+          <select id="clipSelect" aria-label="Clip"></select>
+        </label>
+      </aside>
+
+      <main id="main">
+        <div id="stage">
+          <canvas id="view" aria-label="Three robots simulated live, following the selected clip"></canvas>
+          <div id="labels" aria-hidden="true"></div>
+          <div id="fade" aria-hidden="true"></div>
+          <div id="pushHint" class="push-hint" aria-hidden="true" hidden>Drag a robot to push it</div>
+          <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+          <div id="boot">
+            <div>
+              <div id="bootMsg">Loading MuJoCo&hellip;</div>
+              <div class="bar"><i id="bootBar"></i></div>
+              <div id="bootDetail" class="boot-detail"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="controls">
+          <button id="btnPlay" class="icon-btn" type="button" aria-label="Pause" disabled>
+            <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /></svg>
+            <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          </button>
+          <button id="btnRestart" class="text-btn" type="button" title="All robots back to the stand" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z" /></svg>
+            <span>Restart</span>
+          </button>
+          <span id="status" class="status" aria-live="polite"><span id="statusText"></span><span id="statusSpeed" aria-hidden="true"></span><span id="statusSlow" class="sr-only"></span></span>
+          <div class="seg" role="radiogroup" aria-label="Interface">
+            <label title="Full-motion interface: the policy follows the whole-body reference">
+              <input type="radio" name="iface" value="motion" checked />
+              <span>Motion</span>
+            </label>
+            <label title="Five-point interface: the policy follows only pelvis, ankle and wrist targets">
+              <input type="radio" name="iface" value="keypoint" />
+              <span>Five-point</span>
+            </label>
+          </div>
+        </div>
+
+        <p id="kpNote" class="caption kp-note" hidden>
+          <span class="kp-keys">
+            <span class="kp-key"><i style="background: #ffd91a"></i>Pelvis</span>
+            <span class="kp-key"><i style="background: #ff731a"></i>Left ankle</span>
+            <span class="kp-key"><i style="background: #1acce6"></i>Right ankle</span>
+            <span class="kp-key"><i style="background: #e62640"></i>Left wrist</span>
+            <span class="kp-key"><i style="background: #3366ff"></i>Right wrist</span>
+          </span>
+          <span>The policy sees only these targets.</span>
+        </p>
+        <p id="caption" class="caption">The shared policy runs live in your browser. Drag a robot to push it.</p>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

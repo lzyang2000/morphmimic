@@ -1,0 +1,24 @@
+{
+  "name": "morphmimic-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "gen": "uv run --project .. --group export python tools/gen_scene.py",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "xcheck-policy": "uv run --project .. --group export python tools/xcheck_policy.py && node tools/xcheck_policy.mjs",
+    "xcheck-live": "uv run --project .. --group export python tools/xcheck_live.py && node tools/xcheck_live.mjs",
+    "headless-live": "node tools/headless_live.mjs",
+    "check-live-bundle": "node tools/check_live_bundle.mjs",
+    "dev": "npm run gen && vite",
+    "build": "npm run gen && vite build"
+  },
+  "dependencies": {
+    "@mujoco/mujoco": "^3.17.0",
+    "onnxruntime-web": "^1.30.0",
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

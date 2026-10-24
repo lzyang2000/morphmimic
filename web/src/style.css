@@ -1,0 +1,325 @@
+:root {
+  --bg: #f6f7f9;
+  --stage: #eef1f5;
+  --panel: #ffffff;
+  --line: #dbe1e8;
+  --text: #1b2430;
+  --muted: #5f6b7a;
+  --accent: #ff6c0c;
+  --accent-soft: #fff1e7;
+  --radius: 10px;
+  --side: 232px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+#app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--side) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+}
+
+/* ------------------------------------------------------------------ sidebar */
+
+#sidebar {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.side-title {
+  margin: 0 8px 8px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.clip-list { list-style: none; margin: 0; padding: 0; }
+
+.clip-list button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  padding: 7px 10px 7px 9px;
+  cursor: pointer;
+}
+.clip-list button:hover { background: #f1f3f6; }
+.clip-list button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.clip-list button[aria-current="true"] {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+.clip-list .dur { flex: none; white-space: nowrap; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 400; }
+
+.clip-select { display: none; }
+
+/* --------------------------------------------------------------------- main */
+
+#main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+#stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--stage);
+}
+
+canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+/* On touch screens a one-finger vertical drag scrolls the page past the demo; horizontal drags
+   still orbit and two fingers still zoom and pan. render.js sets the same inline, after
+   OrbitControls writes touch-action: none there. */
+@media (pointer: coarse) { canvas#view { touch-action: pan-y; } }
+
+#labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+/* Covers the cut when the robots are put back on their home stands (main.js): out, cut, back in. */
+#fade { position: absolute; inset: 0; z-index: 2; pointer-events: none; background: var(--stage); opacity: 0; transition: opacity 0.15s ease; }
+#fade.on { opacity: 1; }
+#fade.instant { transition: none; }
+
+/* "Drag a robot to push it", until the first drag (main.js). */
+.push-hint {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 1;
+  pointer-events: none;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 12px;
+  box-shadow: 0 1px 4px rgba(27, 36, 48, 0.08);
+  transition: opacity 0.6s ease;
+}
+.push-hint[hidden] { display: none; }
+.push-hint.gone { opacity: 0; }
+
+.notice {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  z-index: 3;
+  font-size: 12.5px;
+  color: #fff;
+  background: rgba(27, 36, 48, 0.88);
+  border-radius: 8px;
+  padding: 6px 12px;
+  box-shadow: 0 2px 10px rgba(27, 36, 48, 0.2);
+}
+.notice[hidden] { display: none; }
+
+.robot-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+  box-shadow: 0 1px 4px rgba(27, 36, 48, 0.08);
+  will-change: transform;
+}
+.robot-label .note {
+  margin-left: 6px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+#boot {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--stage);
+  text-align: center;
+  padding: 24px;
+  z-index: 2;
+}
+#boot .bar { width: 220px; height: 3px; background: #d6dce4; border-radius: 2px; overflow: hidden; margin: 14px auto 0; }
+#boot .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.25s ease; }
+#boot .boot-detail { margin-top: 8px; min-height: 1.4em; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+#boot .err-head { margin-bottom: 10px; font-weight: 600; max-width: 560px; }
+#boot .err { color: #b3261e; max-width: 560px; margin: 0 auto; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; }
+#boot .err-hint { margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+#boot.hidden { display: none; }
+
+/* ----------------------------------------------------------------- controls */
+
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.icon-btn {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.icon-btn svg { width: 18px; height: 18px; fill: currentColor; }
+.icon-btn .i-play { display: none; }
+.icon-btn.paused .i-play { display: block; }
+.icon-btn.paused .i-pause { display: none; }
+.icon-btn:disabled { opacity: 0.45; cursor: default; }
+.icon-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+.text-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 12px 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.text-btn svg { width: 16px; height: 16px; fill: currentColor; }
+.text-btn:hover { background: #f1f3f6; }
+.text-btn:disabled { opacity: 0.45; cursor: default; }
+.text-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Read by screen readers, not shown. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.seg {
+  flex: none;
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.seg label { position: relative; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: inherit; }
+.seg span { display: block; padding: 6px 12px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.seg label + label span { border-left: 1px solid var(--line); }
+.seg input:checked + span { background: var(--accent); color: #fff; font-weight: 600; }
+.seg input:disabled + span { opacity: 0.4; cursor: not-allowed; }
+.seg input:focus-visible + span { outline: 2px solid var(--text); outline-offset: -2px; }
+
+.caption { margin: 0 2px; color: var(--muted); font-size: 12.5px; }
+.kp-note[hidden] { display: none; }
+.kp-keys { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; margin-right: 10px; vertical-align: middle; }
+.kp-key { display: inline-flex; align-items: center; gap: 5px; color: var(--text); white-space: nowrap; }
+.kp-key i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+.nogl {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------ narrow screens */
+
+@media (max-width: 720px) {
+  #app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px;
+  }
+  #sidebar { padding: 0; border: 0; background: none; overflow: visible; }
+  .side-title, .clip-list { display: none; }
+  .clip-select { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .clip-select select {
+    flex: 1 1 auto;
+    min-width: 0;
+    font: inherit;
+    font-size: 15px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 8px;
+  }
+  /* The view is width-limited in portrait, so a taller stage only adds empty floor and sky. */
+  #stage { flex: 0 1 auto; aspect-ratio: 1 / 1; max-height: 72vh; }
+  .robot-label { font-size: 11px; padding: 1px 7px; }
+  #controls { flex-wrap: wrap; row-gap: 8px; }
+  .status { flex-basis: 0; }
+  .seg { width: 100%; }
+  .seg label { flex: 1 1 0; text-align: center; }
+}
