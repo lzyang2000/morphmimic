@@ -21,8 +21,11 @@ own bone directions would tilt the chest by 19 degrees.
 
 Calibration (A+B+X+Y, the operator standing): the scale is the uniform stand's pelvis
 height above its ankles over the operator's; the root follows PICO's pelvis times the
-scale, and one height offset puts the skeleton's ankles at the stand's ankle height, as
-the GMR path does. The policy node aligns the heading, as for GMR.
+scale, and a height offset puts the skeleton's ankles at the stand's ankle height, as
+the GMR path does (the lower ankle at the stand's lower one). The offset follows the
+floor (`floor.FloorTracker`: the lowest ankle in stance), so a slope, stairs or PICO's
+height drift do not sink the goal's feet. The policy node aligns the heading, as for
+GMR.
 
   python -m deploy.vr_teleop.human_target --human-root $DATA/seed_g1_npz50/human50
 writes `human_skeleton.json` from the training sidecars (the bones and the stand).
@@ -46,6 +49,7 @@ from deploy.sim2sim.human import (
   turn_human,
 )
 from deploy.sim2sim.obs import quat_apply, quat_inv, quat_mul
+from deploy.vr_teleop.floor import FloorTracker
 from deploy.vr_teleop.protocol import RefFrame, RefMessage, encode_ref
 
 # `A`: Unity's y-up to z-up (+90 degrees about x), then 180 degrees about z (wxyz).
@@ -95,9 +99,11 @@ class HumanTarget:
     doc = json.loads(Path(skeleton_file).read_text())
     self.bones = np.asarray(doc["bones"])
     self.pelvis_height = float(doc["pelvis_height"])
-    self.ankle_z = float(doc["ankle_z"])
+    # The floor is the lower ankle (`FloorTracker`), so it goes to the stand's lower ankle.
+    self.ankle_z = float(np.min(np.asarray(doc["stand"]["pos"])[_ANKLES, 2]))
     self.scale = 1.0
     self.z_offset = 0.0
+    self.floor = FloorTracker()
     self.calibrated = False
 
   def calibrate(self, body: np.ndarray) -> None:
@@ -110,8 +116,8 @@ class HumanTarget:
             " ankles; stand straight and press the combo again", flush=True)
       return
     self.scale = self.pelvis_height / height
-    self.z_offset = 0.0
-    self.z_offset = self.ankle_z - self._pos(pos, quat)[_ANKLES, 2].mean()
+    self.floor.reset(self._skeleton(pos, quat)[_ANKLES])
+    self.z_offset = self.ankle_z - self.floor.z
     self.calibrated = True
     print(f"[streamer] human: calibrated, scale {self.scale:.3f} (the operator's pelvis "
           f"{self.pelvis_height / self.scale:.3f} m above the ankles), height offset "
@@ -128,8 +134,13 @@ class HumanTarget:
     return msg, encode_ref(msg)
 
   def _pos(self, pos: np.ndarray, quat: np.ndarray) -> np.ndarray:
-    root = self.scale * pos[HUMAN_PELVIS] + np.array([0.0, 0.0, self.z_offset])
-    return forward_kinematics(root, quat, self.bones)
+    """The skeleton with its ankles on the followed floor at the stand's height."""
+    skeleton = self._skeleton(pos, quat)
+    self.z_offset = self.ankle_z - self.floor.update(skeleton[_ANKLES])
+    return skeleton + np.array([0.0, 0.0, self.z_offset])
+
+  def _skeleton(self, pos: np.ndarray, quat: np.ndarray) -> np.ndarray:
+    return forward_kinematics(self.scale * pos[HUMAN_PELVIS], quat, self.bones)
 
 
 def skeleton_doc(human_root: Path) -> dict:

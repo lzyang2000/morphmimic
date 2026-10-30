@@ -15,8 +15,9 @@ not SONIC's transform (`retarget.unity_to_robot`, the five-point path), so this 
 does GMR's (`pico_to_gmr`); `gmr_to_pico` inverts it for synthetic sessions.
 
 Calibration (A+B+X+Y, the operator standing): GMR solves the pose to convergence from
-the neutral stand (`GmrRetargeter.settle`) and one height offset is fixed so the
-robot's ankles are at the stand's height (`stand.json`); the policy goals need no
+the neutral stand (`GmrRetargeter.settle`) and a height offset puts the robot's ankles
+at the stand's height (`stand.json`), following the floor after that
+(`floor.FloorTracker`, for slopes, stairs and PICO's drift); the policy goals need no
 other placement, since they are position-free and the policy node aligns the heading.
 """
 
@@ -29,6 +30,7 @@ from scipy.spatial.transform import Rotation as R
 
 from deploy.sim2sim.human import PICO_JOINTS, SMPL_PARENT
 from deploy.sim2sim.obs import Robot
+from deploy.vr_teleop.floor import FloorTracker
 from deploy.vr_teleop.gmr_retarget import STAND_FILE, GmrRetargeter
 from deploy.vr_teleop.protocol import RefFrame, RefMessage, encode_ref
 
@@ -73,6 +75,7 @@ class ReferenceBuilder:
                     for s in ("left", "right")]
     self._stand = json.loads(STAND_FILE.read_text())[self.robot.body]
     self.z_offset = 0.0
+    self.floor = FloorTracker()
     self._prev: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
   def calibrate(self, body: Body) -> None:
@@ -80,8 +83,8 @@ class ReferenceBuilder:
     height."""
     self.gmr.settle(body)
     data = self.gmr.gmr.configuration.data
-    ankle_z = data.xpos[[self._bodies[i] for i in self._ankles], 2].mean()
-    self.z_offset = self._stand["ankle_z"] - float(ankle_z)
+    self.floor.reset(data.xpos[[self._bodies[i] for i in self._ankles]])
+    self.z_offset = self._stand["ankle_z"] - self.floor.z
     self._prev = None
 
   def state(self, body: Body) -> np.ndarray:
@@ -91,6 +94,7 @@ class ReferenceBuilder:
     q = np.array([pose.joint_pos.get(n, stand[n]) for n in self.robot.native_joint_names])
     data = self.gmr.gmr.configuration.data
     pos = data.xpos[self._bodies].copy()
+    self.z_offset = self._stand["ankle_z"] - self.floor.update(pos[self._ankles])
     pos[:, 2] += self.z_offset
     quat = data.xquat[self._bodies].copy()
     q_canon = self.robot.to_canonical(q)
