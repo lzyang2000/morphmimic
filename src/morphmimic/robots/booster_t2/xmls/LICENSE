@@ -5,7 +5,8 @@ and `meshes/`), vendored unmodified except for the MJCF edits documented at the
 top of ``t2.xml``.  The mesh binaries in ``assets/`` are byte-identical copies of
 the upstream ``meshes/`` directory.
 
-Redistributed here under the same terms as the Booster T1 description assets in
-mjlab's asset zoo (Apache License 2.0).
+Redistributed here under the same terms as the other Booster description assets
+already vendored in this repository (see
+``src/mjlab/asset_zoo/robots/booster_t1/xmls/LICENSE``, Apache License 2.0).
 No upstream LICENSE file accompanied the T2 drop that was handed to us; if the
 vendor ships one, replace this file with it verbatim.

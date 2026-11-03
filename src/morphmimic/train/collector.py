@@ -16,6 +16,7 @@ import torch
 from torch import Tensor
 
 from morphmimic.constants import HIST_LEN, PROPRIO_DIM, R_MAX
+from morphmimic.env.actions import CanonicalJointPositionAction
 from morphmimic.env.commands import MultiMotionCommand
 from morphmimic.env.morphmimic_env import MorphMimicEnv
 from morphmimic.train.obs_history import ObsHistory
@@ -32,7 +33,8 @@ PolicyFn = Callable[[Tensor, dict[str, Tensor]], Tensor]
 class Collector:
   """Steps `env` with `policy_fn(obs_hist_flat [N, H*93], goals) -> [N, 29]` (called
   under no_grad; `goals` maps each of `GOAL_GROUPS` to its obs: "goal" [N, 670] and
-  "goal_kp" [N, 450]) plus N(0, action_noise_std²) noise and logs to `replay`.
+  "goal_kp" [N, 1684], the raw human poses then the robot pelvis quaternion) plus
+  N(0, action_noise_std²) noise and logs to `replay`.
 
   Per step, before `env.step`, it reads the frame f_t = `command.global_frame`; row t
   of each env holds the `state` and `policy_clean` obs it acted on, the executed
@@ -60,7 +62,15 @@ class Collector:
     action_noise_std: float = 0.1,
     hist_len: int = HIST_LEN,
     on_reset: Callable[[Tensor], None] | None = None,
+    det_frac: float = 0.0,
+    clean_action_record: bool = False,
   ):
+    """`det_frac`: the first round(det_frac * N) envs act without the exploration noise
+    (`--collect-det-frac`), so the replay also holds the states the deterministic
+    policy reaches. `clean_action_record` (`--clean-action-record`): the env's action
+    term executes a + eps and records the clean a (mjlab's `last_action`, so the
+    `prev_action` observation and the action-rate penalty), and the replay logs the
+    executed action; off, the env sees and records the noisy action."""
     if replay.num_envs != env.num_envs:
       raise ValueError(
         f"replay holds {replay.num_envs} envs, the env has {env.num_envs}"
@@ -70,6 +80,9 @@ class Collector:
     self.policy_fn = policy_fn
     self.action_noise_std = action_noise_std
     self.on_reset = on_reset
+    self.noise_scale = torch.ones(env.num_envs, 1, device=env.device)
+    self.action_term: CanonicalJointPositionAction | None = None
+    self.set_exploration(det_frac, clean_action_record)
     command = env.command_manager.get_term(env.motion_command_name)
     assert isinstance(command, MultiMotionCommand)
     self.command = command
@@ -78,6 +91,26 @@ class Collector:
     self.ep_step = torch.zeros(n, dtype=torch.long, device=device)
     self.ep_return = torch.zeros(n, device=device)
     self.obs: dict[str, Tensor] = {}
+
+  def set_exploration(self, det_frac: float, clean_action_record: bool) -> None:
+    """Sets which envs explore (`noise_scale`: 0 for the first round(det_frac * N))
+    and where the noise is added (the constructor's `det_frac` and
+    `clean_action_record`); a resume applies a checkpoint's values."""
+    if not 0.0 <= det_frac <= 1.0:
+      raise ValueError(f"det_frac must be in [0, 1], got {det_frac}")
+    n, device = self.env.num_envs, self.env.device
+    num_det = round(det_frac * n)
+    self.noise_scale = (torch.arange(n, device=device) >= num_det).float()[:, None]
+    term = self.env.action_manager.get_term("joint_pos")
+    assert isinstance(term, CanonicalJointPositionAction)
+    if clean_action_record:
+      term.noise_std = self.action_noise_std
+      term.noise_scale.copy_(self.noise_scale)
+      self.action_term = term
+    else:
+      term.noise_std = 0.0
+      term.noise_scale.fill_(1.0)
+      self.action_term = None
 
   def reset_all(self) -> None:
     """Reset every env, refill the histories and restart the episode counters. An
@@ -112,15 +145,19 @@ class Collector:
       frame = self.command.global_frame.clone()
       goals = {group: obs[group] for group in GOAL_GROUPS}
       action = self.policy_fn(self.history.flat(), goals)
-      action = action + torch.randn_like(action) * self.action_noise_std
+      if self.action_term is None:  # The env sees (and records) the noisy action.
+        action = action + torch.randn_like(action) * (
+          self.action_noise_std * self.noise_scale
+        )
       next_obs, reward, terminated, truncated, _ = self.env.step(action)
+      executed = action if self.action_term is None else self.action_term.executed
       # The env reuses its buffers; keep this step's values past the reset below.
       reward, terminated = reward.clone(), terminated.clone()
       timeout = truncated & ~terminated
       self.replay.add_step(
         state=obs["state"],
         obs=obs["policy_clean"],
-        action=action,
+        action=executed,
         reward=reward,
         terminated=terminated,
         timeout=timeout,

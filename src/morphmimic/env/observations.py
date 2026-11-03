@@ -1,14 +1,14 @@
-"""Observation terms of the MorphMimic env.
+"""Observation terms of the SuperMimic env.
 
 Every term is canonical (29 joints, 14 tracked bodies) for every robot: joint terms go
 through the robot's translator, read from the motion command (`cmd.spec.translator`),
 and the proprioceptive gyro and gravity come from tracked slot 0's body state (spec
 section 8.1), not from an IMU site or the floating base.
 
-`wm_state`, `goal_future` and `goal_keypoints` give the robot state and the goals in
+`wm_state`, `goal_future` and `goal_human` give the robot state and the goals in
 the motion library's frame (world positions minus the env origin), so they can be
 compared directly with `MotionLibrary.state` / `future` and fed to the analytic heads of
-`morphmimic.model.rewards_torch` and `morphmimic.model.keypoints`.
+`morphmimic.model.rewards_torch`.
 """
 
 from __future__ import annotations
@@ -21,10 +21,11 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from torch import Tensor
 
+from morphmimic.constants import HUMAN_ENV_DIM
 from morphmimic.env.commands import MultiMotionCommand
-from morphmimic.model.keypoints import keypoint_features
+from morphmimic.model.human import pack_human_goal
 from morphmimic.model.rewards_torch import goal_features
-from morphmimic.model.state import StateParts, join_state
+from morphmimic.model.state import StateParts, anchor_quat, join_state
 
 if TYPE_CHECKING:
   from mjlab.entity import Entity
@@ -55,16 +56,22 @@ def wm_state(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
 
 
 def goal_future(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
-  """Goal [B, K * 67] from the command's next K reference frames."""
+  """Goal [B, K * 67] from the command's next K reference frames, in the command's
+  `goal_anchor` frame."""
   cmd = _command(env, command_name)
-  return goal_features(_robot_state(env, cmd), cmd.future_states())
+  return goal_features(_robot_state(env, cmd), cmd.future_states(), cmd.cfg.goal_anchor)
 
 
-def goal_keypoints(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
-  """Keypoint goal [B, K * 45]: the five tracked bodies of the command's next K
-  reference frames in the robot's pelvis heading frame (no target jitter)."""
+def goal_human(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
+  """Raw human goal [B, 1684] (`pack_human_goal`): the command's next K human poses
+  and the robot anchor body's (torso_link) quaternion (wxyz, world, `anchor_quat`).
+  Zeros when the library has no human sidecars."""
   cmd = _command(env, command_name)
-  return keypoint_features(_robot_state(env, cmd), cmd.future_states())
+  if not cmd.library.has_human:
+    return torch.zeros(env.num_envs, HUMAN_ENV_DIM, device=env.device)
+  window = cmd.human_future()
+  robot_quat = anchor_quat(_robot_state(env, cmd))
+  return pack_human_goal(window[..., :3], window[..., 3:], robot_quat)
 
 
 def imu_ang_vel(env: ManagerBasedRlEnv) -> Tensor:
@@ -100,24 +107,30 @@ def canonical_joint_vel(
   return tr.to_canonical_delta(asset.data.joint_vel)
 
 
-def _imu(env: ManagerBasedRlEnv, command_name: str) -> tuple[Tensor, Tensor]:
+def _imu(
+  env: ManagerBasedRlEnv, command_name: str, imu_slot: int | None = None
+) -> tuple[Tensor, Tensor]:
   """World quaternion and angular velocity of the robot's IMU body (`RobotSpec.
-  imu_body`: the G1 and X2 pelvis, the T2 trunk)."""
+  imu_body`: the G1 and X2 pelvis, the T2 trunk), or of tracked slot `imu_slot`."""
   cmd = _command(env, command_name)
-  body = cmd.body_indexes[cmd.spec.imu_slot]
+  body = cmd.body_indexes[cmd.spec.imu_slot if imu_slot is None else imu_slot]
   data = cmd.robot.data
   return data.body_link_quat_w[:, body], data.body_link_ang_vel_w[:, body]
 
 
-def canonical_ang_vel(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
+def canonical_ang_vel(
+  env: ManagerBasedRlEnv, command_name: str, imu_slot: int | None = None
+) -> Tensor:
   """Gyro [B, 3]: the IMU body's angular velocity in its own frame."""
-  quat, ang_vel = _imu(env, command_name)
+  quat, ang_vel = _imu(env, command_name, imu_slot)
   return quat_apply_inverse(quat, ang_vel)
 
 
-def canonical_gravity(env: ManagerBasedRlEnv, command_name: str) -> Tensor:
+def canonical_gravity(
+  env: ManagerBasedRlEnv, command_name: str, imu_slot: int | None = None
+) -> Tensor:
   """Gravity direction [B, 3] in the IMU body's frame."""
-  quat, _ = _imu(env, command_name)
+  quat, _ = _imu(env, command_name, imu_slot)
   return quat_apply_inverse(quat, _command(env, command_name).robot.data.gravity_vec_w)
 
 

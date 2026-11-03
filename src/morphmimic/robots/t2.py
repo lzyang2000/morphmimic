@@ -1,4 +1,5 @@
-"""Booster T2 spec: trunk-rooted, 29 body joints + 2 head joints, T-pose arm zero.
+"""Booster T2 spec: trunk-rooted, 29 body joints + 2 head joints, T-pose arm zero; the
+actuators carry Booster's official deploy gains (`robots.t2_booster`).
 
 Map correction (checked by forward kinematics): with the arm hanging and the forearm
 forward, as at the G1's zero, the T2 wrist yaw bends about the G1 wrist pitch axis and
@@ -71,15 +72,18 @@ _OFFSET = {
 def t2_spec() -> RobotSpec:
   from morphmimic.robots.booster_t2.t2_constants import (
     T2_ACTION_JOINT_NAMES,
-    T2_BEYONDMIMIC_KPKD_10HZ_ACTION_SCALE,
     T2_FOOT_COLLISION_EXPR,
     get_t2_robot_cfg,
+  )
+  from morphmimic.robots.t2_booster import (
+    booster_action_scale,
+    get_t2_booster_robot_cfg,
   )
 
   return RobotSpec(
     name="t2",
-    entity_cfg_fn=get_t2_robot_cfg,
-    action_scale=dict(T2_BEYONDMIMIC_KPKD_10HZ_ACTION_SCALE),
+    entity_cfg_fn=get_t2_booster_robot_cfg,
+    action_scale=booster_action_scale(),
     joint_names=T2_ACTION_JOINT_NAMES,
     root_body="trunk",
     anchor_body="trunk",

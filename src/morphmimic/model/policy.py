@@ -15,7 +15,7 @@ from morphmimic.constants import (
   CTX_DIM,
   GOAL_DIM,
   HIST_LEN,
-  KP_GOAL_DIM,
+  HUMAN_GOAL_DIM,
   LOCAL_DIM,
   PROPRIO_DIM,
 )
@@ -34,7 +34,10 @@ class PolicyCfg:
   latent: int = 32
   act: str = "elu"
   hist_len: int = HIST_LEN
-  keypoint: bool = False  # also build the five-point goal encoder (`KeypointEncoder`)
+  human: bool = False  # also build the human skeleton goal encoder (`HumanEncoder`)
+  recon: bool = False
+  """Also build the reconstruction head (`ReconHead`; the direct human policy,
+  `TrainCfg.policy_goal="human"`). Needs `human`."""
   bf16: bool = False
   """bfloat16 autocast for the MLP matmuls (`nets.run_mlp`); outputs are float32."""
   morph_dim: int = 0
@@ -57,17 +60,39 @@ class MotionEncoder(nn.Module):
     return torch.tanh(run_mlp(self.net, goal, self.cfg.bf16))
 
 
-class KeypointEncoder(nn.Module):
-  """Masked keypoint goal [B, 465] (`mask_keypoint_goal`) -> latent z [B, latent] in
+class HumanEncoder(nn.Module):
+  """Masked human goal [B, 2254] (`mask_human_goal`) -> latent z [B, latent] in
   (-1, 1); the motion encoder's widths, feeding the same decoder."""
 
   def __init__(self, cfg: PolicyCfg) -> None:
     super().__init__()
     self.cfg = cfg
-    self.net = mlp(KP_GOAL_DIM, cfg.enc_hidden, cfg.latent, cfg.act)
+    self.net = mlp(HUMAN_GOAL_DIM, cfg.enc_hidden, cfg.latent, cfg.act)
 
-  def forward(self, kp_goal: Tensor) -> Tensor:
-    return torch.tanh(run_mlp(self.net, kp_goal, self.cfg.bf16))
+  def forward(self, goal: Tensor) -> Tensor:
+    return torch.tanh(run_mlp(self.net, goal, self.cfg.bf16))
+
+
+# Hidden widths of the reconstruction head (`ReconHead`).
+RECON_HIDDEN = (256, 256)
+
+
+class ReconHead(nn.Module):
+  """[z, morph] -> the normalised motion goal [B, 670] (the direct human policy's
+  reconstruction term: the human latent decoded back to the robot reference). The
+  morphology vector [morph_dim] is expanded to the batch and appended after z, as the
+  decoder appends it (no input when `cfg.morph_dim` is 0); MLP `RECON_HIDDEN`."""
+
+  def __init__(self, cfg: PolicyCfg) -> None:
+    super().__init__()
+    self.cfg = cfg
+    self.net = mlp(cfg.latent + cfg.morph_dim, RECON_HIDDEN, GOAL_DIM, cfg.act)
+
+  def forward(self, z: Tensor, morph: Tensor) -> Tensor:
+    parts = [z]
+    if self.cfg.morph_dim:
+      parts.append(morph.expand(*z.shape[:-1], -1))
+    return run_mlp(self.net, torch.cat(parts, dim=-1), self.cfg.bf16)
 
 
 class Decoder(nn.Module):
@@ -155,9 +180,9 @@ class Policy(nn.Module):
   """Motion-tracking policy: a = decoder(encoder(goal), obs history); the decoder
   also sees the actor morphology vector (`set_morphology`), the encoders never do.
 
-  With `cfg.keypoint` it also has `kp_encoder`, a second goal encoder for the sparse
-  five-point goal that feeds the same decoder: a = decoder(kp_encoder(kp_goal), obs
-  history). It is registered after `decoder`, so a keypoint-free policy's parameters
+  With `cfg.human` it also has `human_encoder`, a second goal encoder for the masked
+  human skeleton goal that feeds the same decoder: a = decoder(human_encoder(goal),
+  obs history). It is registered after `decoder`, so a human-free policy's parameters
   and state dict are unchanged by the option.
   """
 
@@ -166,9 +191,12 @@ class Policy(nn.Module):
     self.cfg = cfg if cfg is not None else PolicyCfg()
     self.encoder = MotionEncoder(self.cfg)
     self.decoder = Decoder(self.cfg)
-    self.kp_encoder: KeypointEncoder | None = (
-      KeypointEncoder(self.cfg) if self.cfg.keypoint else None
+    self.human_encoder: HumanEncoder | None = (
+      HumanEncoder(self.cfg) if self.cfg.human else None
     )
+    if self.cfg.recon and not self.cfg.human:
+      raise ValueError("recon needs the human encoder (human=True).")
+    self.recon_head: ReconHead | None = ReconHead(self.cfg) if self.cfg.recon else None
 
   def encode(self, goal: Tensor) -> Tensor:
     """Goal [B, 670] -> z [B, latent]."""
@@ -187,28 +215,39 @@ class Policy(nn.Module):
 
   def motion_parameters(self) -> Iterator[nn.Parameter]:
     """Motion encoder then decoder parameters: `parameters()` of a policy without the
-    keypoint encoder."""
+    human encoder."""
     return itertools.chain(self.encoder.parameters(), self.decoder.parameters())
 
-  def kp_parameters(self) -> Iterator[nn.Parameter]:
-    """Keypoint encoder parameters; raises if the policy has none."""
-    return self._require_kp_encoder().parameters()
+  def human_parameters(self) -> Iterator[nn.Parameter]:
+    """Human encoder parameters, then the reconstruction head's (if any); raises if
+    the policy has no human encoder."""
+    params = self._require_human_encoder().parameters()
+    if self.recon_head is None:
+      return params
+    return itertools.chain(params, self.recon_head.parameters())
 
-  def encode_kp(self, kp_goal: Tensor) -> Tensor:
-    """Masked keypoint goal [B, 465] -> z [B, latent]."""
-    return self._require_kp_encoder()(kp_goal)
+  def reconstruct(self, z: Tensor) -> Tensor:
+    """Latent z [B, latent] -> the predicted normalised motion goal [B, 670]
+    (`recon_head` with the decoder's `morph_actor`)."""
+    if self.recon_head is None:
+      raise RuntimeError("policy has no reconstruction head")
+    return self.recon_head(z, self.decoder.morph_actor)
 
-  def forward_kp(
-    self, obs_hist_flat: Tensor, kp_goal: Tensor, morph: Tensor | None = None
+  def encode_human(self, goal: Tensor) -> Tensor:
+    """Masked human goal [B, 2254] -> z [B, latent]."""
+    return self._require_human_encoder()(goal)
+
+  def forward_human(
+    self, obs_hist_flat: Tensor, goal: Tensor, morph: Tensor | None = None
   ) -> Tensor:
-    """Obs history [B, hist_len * 93] and masked keypoint goal [B, 465] -> action
+    """Obs history [B, hist_len * 93] and masked human goal [B, 2254] -> action
     [B, 29]. `morph` as in `forward`."""
-    return self.decoder(self.encode_kp(kp_goal), obs_hist_flat, morph)
+    return self.decoder(self.encode_human(goal), obs_hist_flat, morph)
 
-  def _require_kp_encoder(self) -> KeypointEncoder:
-    if self.kp_encoder is None:
-      raise RuntimeError("policy has no keypoint encoder")
-    return self.kp_encoder
+  def _require_human_encoder(self) -> HumanEncoder:
+    if self.human_encoder is None:
+      raise RuntimeError("policy has no human encoder")
+    return self.human_encoder
 
 
 @dataclass

@@ -1,4 +1,4 @@
-"""Train a MorphMimic tracking policy (Algorithm A.1 of SuperMimic).
+"""Train a SuperMimic tracking policy (Algorithm A.1).
 
 Example (local smoke run):
   uv run python -m morphmimic.scripts.train \
@@ -180,7 +180,7 @@ def run(
           f" {robots}; shared {trainer.cfg.share}; lr x{trainer.lr_scale:.4f};"
           f" FiLM {trainer.cfg.decoder_film}; actor geometry"
           f" {trainer.cfg.actor_geometry}; latent align"
-          f" {trainer.cfg.latent_align_weight:g}",
+          f" {trainer.cfg.latent_align_weight:g}; pooled norms {trainer.cfg.pool_norms}",
           flush=True,
         )
       elif distributed and trainer.is_main:

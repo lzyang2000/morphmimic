@@ -4,13 +4,18 @@ The same two messages a hardware node exchanges with the policy, one little-endi
 float32 frame each:
 
   State  (robot -> policy, every control step), to `STATE_PORT`:
-    [step_id, imu_quat_wxyz (4), imu_gyro (3), q (J), dq (J), cues]
+    [step_id, imu_quat_wxyz (4), imu_gyro (3), q (J), dq (J), cues, pelvis_pos (3),
+     pelvis_yaw]
     Joints in the robot's native order; the IMU is the orientation of the body it sits
     on (`Robot.imu_body`) and that body's angular velocity in its own frame. A
     `step_id` lower than the previous one is a reset: the policy clears its history and
     restarts the reference at frame 0. `cues` counts the operator's cues since that
     reset (the G1 remote's Y: play the clip); a count, so a dropped message loses none.
-    A message without it reads as 0.
+    A message without it reads as 0. `pelvis_pos` and `pelvis_yaw` are the floating
+    base's (the robot's root body: the G1 and X2 pelvis, the T2 trunk) world position
+    and yaw (rad) from a pose source (`deploy/hardware/pose_source.py`), which the
+    robot-anchored goal needs (`--goal-anchor robot`); NaN when the robot has none (the
+    G1 on hardware, for now), and a message without them reads as NaN.
 
   Action (policy -> robot), to `ACTION_PORT`:
     [step_id, q_target (J)]
@@ -38,18 +43,26 @@ STATE_PORT = 9881
 ACTION_PORT = 9880
 DISPLAY_PORT = 9882  # Policy node -> sim, teleop only: the window being tracked.
 _STATE_HEAD = 1 + 4 + 3
+_STATE_TAIL = (0, 1, 1 + 4)  # Values after dq: none, the cues, the cues and the pose.
 
 
 def pack_state(step_id: int, quat: np.ndarray, gyro: np.ndarray, q: np.ndarray,
-               dq: np.ndarray, cues: int = 0) -> bytes:
-  return np.concatenate(([step_id], quat, gyro, q, dq, [cues])).astype("<f4").tobytes()
+               dq: np.ndarray, cues: int = 0, pelvis_pos: np.ndarray | None = None,
+               pelvis_yaw: float | None = None) -> bytes:
+  """The state message; the pose is NaN unless both `pelvis_pos` and `pelvis_yaw` are
+  given."""
+  pose = np.full(4, np.nan)
+  if pelvis_pos is not None and pelvis_yaw is not None:
+    pose = np.concatenate((pelvis_pos, [pelvis_yaw]))
+  return np.concatenate(([step_id], quat, gyro, q, dq, [cues], pose)).astype("<f4").tobytes()
 
 
 def _state_values(data: bytes, num_joints: int) -> np.ndarray:
   buf = np.frombuffer(data, dtype="<f4").astype(np.float64)
   n = _STATE_HEAD + 2 * num_joints
-  if len(buf) not in (n, n + 1):
-    raise ValueError(f"state message has {len(buf)} values, expected {n} or {n + 1} for "
+  if len(buf) - n not in _STATE_TAIL:
+    expected = ", ".join(str(n + k) for k in _STATE_TAIL)
+    raise ValueError(f"state message has {len(buf)} values, expected {expected} for "
                      f"{num_joints} joints")
   return buf
 
@@ -62,8 +75,17 @@ def unpack_state(data: bytes, num_joints: int):
 
 def state_cues(data: bytes, num_joints: int) -> int:
   """The state message's cue count (0 if it has none)."""
-  buf = _state_values(data, num_joints)
-  return int(buf[-1]) if len(buf) > _STATE_HEAD + 2 * num_joints else 0
+  buf, n = _state_values(data, num_joints), _STATE_HEAD + 2 * num_joints
+  return int(buf[n]) if len(buf) > n else 0
+
+
+def state_pose(data: bytes, num_joints: int) -> tuple[np.ndarray, float]:
+  """The state message's floating-base pose: (world position [3], yaw); NaN if the
+  sender has no pose source, or the message no pose."""
+  buf, n = _state_values(data, num_joints), _STATE_HEAD + 2 * num_joints + 1
+  if len(buf) < n + 4:
+    return np.full(3, np.nan), float("nan")
+  return buf[n:n + 3].copy(), float(buf[n + 3])
 
 
 def pack_action(step_id: int, targets: np.ndarray) -> bytes:

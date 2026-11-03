@@ -29,8 +29,10 @@ from morphmimic.constants import (
   ANCHOR_IDX,
   CRITIC_ANCHOR_POS_SCALE,
   DT,
+  GOAL_ANCHORS,
   NUM_BODIES,
   ROOT_IDX,
+  GoalAnchor,
 )
 from morphmimic.model.state import heading_frame, rot6d_from_quat, split_state
 
@@ -286,7 +288,9 @@ def analytic_obs(
   )
 
 
-def goal_features(state: Tensor, ref_future: Tensor) -> Tensor:
+def goal_features(
+  state: Tensor, ref_future: Tensor, anchor: GoalAnchor = "reference"
+) -> Tensor:
   """Goal from K future reference frames `ref_future` [..., K, 240] -> [..., K * 67].
 
   Per frame (goal_frame_slices): [ref q | ref qd | ref anchor position in the
@@ -299,17 +303,36 @@ def goal_features(state: Tensor, ref_future: Tensor) -> Tensor:
   gives the reference's path ahead and its anchor height. The orientation is relative
   to the robot anchor, as mjlab's `motion_anchor_ori_b`: on hardware it comes from
   the IMU orientation (yaw included) and the waist joints.
+
+  `anchor="robot"` (`--goal-anchor robot`, the motion interface only) gives goal
+  version 1's features instead: the reference anchor position and orientation in the
+  current robot anchor frame (mjlab's `motion_anchor_pos_b` / `motion_anchor_ori_b`),
+  so the robot's position enters; at deploy it needs a pose source (state estimator).
+  The orientation term is the same under both anchors.
   """
+  if anchor not in GOAL_ANCHORS:
+    raise ValueError(f"Expected anchor 'reference' or 'robot', got {anchor!r}.")
   robot, motion = split_state(state), split_state(ref_future)
   frame_shape = ref_future.shape[:-1]
-  ref_frame = heading_frame(ref_future[..., 0, :])
-  ref_yaw = ref_frame.quat[..., None, :].expand(*frame_shape, 4)
-  origin = nn.functional.pad(ref_frame.pos_xy, (0, 1))[..., None, :]
-  anchor_pos = quat_apply_inverse(ref_yaw, motion.body_pos[..., ANCHOR_IDX, :] - origin)
   robot_anchor_quat = robot.body_quat[..., None, ANCHOR_IDX, :].expand(*frame_shape, 4)
-  anchor_quat_b = quat_mul(
-    quat_inv(robot_anchor_quat), motion.body_quat[..., ANCHOR_IDX, :]
-  )
+  if anchor == "robot":
+    robot_anchor_pos = robot.body_pos[..., None, ANCHOR_IDX, :].expand(*frame_shape, 3)
+    anchor_pos, anchor_quat_b = subtract_frame_transforms(
+      robot_anchor_pos,
+      robot_anchor_quat,
+      motion.body_pos[..., ANCHOR_IDX, :],
+      motion.body_quat[..., ANCHOR_IDX, :],
+    )
+  else:
+    ref_frame = heading_frame(ref_future[..., 0, :])
+    ref_yaw = ref_frame.quat[..., None, :].expand(*frame_shape, 4)
+    origin = nn.functional.pad(ref_frame.pos_xy, (0, 1))[..., None, :]
+    anchor_pos = quat_apply_inverse(
+      ref_yaw, motion.body_pos[..., ANCHOR_IDX, :] - origin
+    )
+    anchor_quat_b = quat_mul(
+      quat_inv(robot_anchor_quat), motion.body_quat[..., ANCHOR_IDX, :]
+    )
   frames = torch.cat(
     [
       motion.joint_pos,

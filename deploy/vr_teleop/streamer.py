@@ -1,6 +1,9 @@
-"""The PICO streamer process: headset samples -> button state machine -> calibrated GMR
-retargeting at 50 Hz -> ZMQ PUB chunks of the robot's reference states for the sim2sim
-policy node (`gmr_streamer.GmrTarget`; `deploy/sim2sim/teleop.py`).
+"""The PICO streamer process: headset samples -> button state machine -> calibrated
+frames at 50 Hz -> ZMQ PUB chunks for the sim2sim policy node (`deploy/sim2sim/teleop.py`).
+The target makes the frames: GMR's retargeting to the robot's reference states
+(`--target gmr`, the default: `gmr_streamer.GmrTarget`, for the motion interface) or the
+operator on the uniform human skeleton (`--target human`: `human_target.HumanTarget`, for
+the human interface; GMR is never loaded).
 
 Each `Streamer.step` pulls the newest sample from a source (`PicoSource` or
 `ReplaySource`), advances the `Controls` state machine, calibrates on the start combo,
@@ -10,7 +13,7 @@ packet costs nothing: the sim de-duplicates by `frame_index`, which counts up fr
 process start and never resets (not even on recalibration).
 
 Run: `python -m deploy.vr_teleop.streamer --robot g1|x2|t2 [--replay F] [--record F]
-[--port N]`.
+[--port N]`, or `--target human` (no robot).
 """
 
 from __future__ import annotations
@@ -32,7 +35,8 @@ _NS = 1_000_000_000
 
 
 class Streamer:
-  """`target` turns PICO bodies into frames and messages (`gmr_streamer.GmrTarget`):
+  """`target` turns PICO bodies into frames and messages (`gmr_streamer.GmrTarget`,
+  `human_target.HumanTarget`):
   `calibrated`, `calibrate(body)`, `frame(index, body)`, `message(mode, calib_id, t_ns,
   fps, frames) -> (message, bytes)`."""
 
@@ -100,14 +104,20 @@ def main() -> None:
   )
   p.add_argument("--record", metavar="F", help="save the incoming samples to F (.npz)")
   p.add_argument("--port", type=int, default=PORT)
-  p.add_argument("--robot", required=True, choices=["g1", "x2", "t2"],
-                 help="the robot GMR retargets to (the policy node's)")
+  p.add_argument("--target", choices=["gmr", "human"], default="gmr",
+                 help="gmr: the robot's reference states (motion interface); human: the"
+                 " operator on the uniform skeleton (human interface, no GMR)")
+  p.add_argument("--robot", choices=["g1", "x2", "t2"],
+                 help="--target gmr: the robot GMR retargets to (the policy node's)")
   p.add_argument("--human-height", type=float, default=None,
-                 help="operator height (m) for GMR's scaling (default: its 1.8 m)")
+                 help="--target gmr: operator height (m) for GMR's scaling (default: its"
+                 " 1.8 m; the human target measures the operator at calibration)")
   p.add_argument(
     "--rate-hz", type=float, default=100.0, help="polling rate of the loop"
   )
   args = p.parse_args()
+  if args.target == "gmr" and args.robot is None:
+    p.error("--target gmr needs --robot")
 
   source = ReplaySource(args.replay, realtime=True) if args.replay else PicoSource()
   recorder = Recorder(args.record) if args.record else None
@@ -116,9 +126,15 @@ def main() -> None:
 
   sock = zmq.Context.instance().socket(zmq.PUB)
   sock.bind(f"tcp://*:{args.port}")
-  from deploy.vr_teleop import gmr_streamer  # Lazy: GMR takes a few seconds to load.
+  if args.target == "human":
+    from deploy.vr_teleop.human_target import HumanTarget
 
-  streamer = Streamer(source, sock.send, gmr_streamer.GmrTarget(args.robot, args.human_height))
+    target = HumanTarget()
+  else:
+    from deploy.vr_teleop import gmr_streamer  # Lazy: GMR takes a few seconds to load.
+
+    target = gmr_streamer.GmrTarget(args.robot, args.human_height)
+  streamer = Streamer(source, sock.send, target)
   source.start()
   # Ctrl-C and SIGTERM only set a flag, so a repeated signal cannot interrupt the
   # cleanup that saves the recording.

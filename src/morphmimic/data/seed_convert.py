@@ -442,7 +442,7 @@ def convert_all(
         "session": path.parent.name,
         "frames": s["frames"],
         "seconds": s["seconds"],
-        "name_reject": name_filter_reject(path.stem) or "",
+        "name_reject": name_filter_reject(path.stem, path.parent.name) or "",
         "feas_reject": s["feas_reject"] or "",
       }
     )

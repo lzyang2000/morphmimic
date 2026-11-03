@@ -36,7 +36,7 @@ from mjlab.utils.lab_api.math import (
 )
 from torch import Tensor
 
-from morphmimic.constants import GOAL_K, R_MAX
+from morphmimic.constants import GOAL_K, R_MAX, GoalAnchor
 from morphmimic.data.motion_library import MotionLibrary
 from morphmimic.robots import get_robot
 
@@ -64,19 +64,50 @@ def normalized_return(
   return torch.where(attainable > 0.0, ratio, torch.zeros_like(ratio))
 
 
+def cap_distribution(p: Tensor, pmax: float) -> Tensor:
+  """`p` [n] (a distribution) with every entry capped at `pmax` and the excess spread
+  over the uncapped entries in proportion to them (water-filling): the m largest
+  entries sit at `pmax`, the rest are scaled by (mass - m pmax) / their mass, with m the
+  smallest count for which the scaled remainder stays under the cap. Exact, and no
+  host sync (a sort and a cumsum). Needs n * pmax >= the mass of `p`."""
+  n = p.numel()
+  sorted_p, order = torch.sort(p, descending=True)
+  m = torch.arange(n + 1, device=p.device, dtype=p.dtype)
+  cum = torch.cat([p.new_zeros(1), torch.cumsum(sorted_p, 0)])  # Mass of the m largest.
+  rest = (cum[-1] - cum).clamp_min(1e-12)  # Mass of the others.
+  scale = (cum[-1] - m * pmax) / rest
+  next_largest = torch.cat([sorted_p, p.new_zeros(1)])  # The (m + 1)-th largest.
+  m_star = torch.argmax((scale * next_largest <= pmax).to(torch.int8))  # First True.
+  idx = torch.arange(n, device=p.device)
+  out_sorted = torch.where(
+    idx < m_star, torch.full_like(sorted_p, pmax), sorted_p * scale[m_star]
+  )
+  out = torch.empty_like(p)
+  out[order] = out_sorted
+  return out
+
+
 def return_sampling_probs(
   g: Tensor,
   past_softmax: Tensor,
   temp: float,
   mix: tuple[float, float, float],
+  cap: float | None = None,
 ) -> tuple[Tensor, Tensor]:
   """Reset-bin distribution of return-based sampling (App. D.1).
 
   Mixture of uniform over bins, `softmax(-temp * g)` of the normalised bin returns `g`
   (low-return bins first; i.e. G_max = 1) and the normalized `past_softmax`, weighted
-  by `mix`. Returns (probs, softmax), both [num_bins].
+  by `mix`. With `cap` (>= 1) no bin's share of the softmax term exceeds `cap` times
+  the uniform share, the excess going to the other bins (`cap_distribution`), so
+  hard-example mining cannot pile onto a few unlearnable bins. Returns (probs,
+  softmax), both [num_bins].
   """
   softmax = torch.softmax(-temp * g, dim=0)
+  if cap is not None:
+    if cap < 1.0:
+      raise ValueError(f"cap must be >= 1 (the uniform share), got {cap}")
+    softmax = cap_distribution(softmax, cap / g.numel())
   probs = (
     mix[0] / g.numel() + mix[1] * softmax + mix[2] * past_softmax / past_softmax.sum()
   )
@@ -165,6 +196,7 @@ class MultiMotionCommand(CommandTerm):
       dtype=getattr(torch, cfg.library_dtype),
       body_names=cfg.body_names,
       robot=self.spec,
+      human_root=cfg.human_root,
     )
     self.global_frame = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     # Clip played by each env in sampling="start" mode (see assign_clips).
@@ -188,6 +220,18 @@ class MultiMotionCommand(CommandTerm):
     num_bins = self.library.num_bins
     self.G_b = torch.zeros(num_bins, device=self.device)
     self.past_softmax = torch.full((num_bins,), 1.0 / num_bins, device=self.device)
+    # Pre-failure restarts (`_mark_failure_restarts`): the frame each env restarts at
+    # on its next resample (-1: a global start) and its run of local restarts.
+    if not 0.0 <= cfg.failure_reset <= 1.0:
+      raise ValueError(f"failure_reset must be in [0, 1], got {cfg.failure_reset}")
+    if not 0 <= cfg.failure_jitter < cfg.failure_lookback:
+      raise ValueError("failure_jitter must be in [0, failure_lookback)")
+    self.restart_frame = torch.full(
+      (self.num_envs,), -1, dtype=torch.long, device=self.device
+    )
+    self.consecutive_local = torch.zeros(
+      self.num_envs, dtype=torch.long, device=self.device
+    )
     self.disc_return = torch.zeros(self.num_envs, device=self.device)
     self.gamma_pow = torch.ones(self.num_envs, device=self.device)
     self.horizon_pow = torch.ones(self.num_envs, device=self.device)
@@ -327,6 +371,11 @@ class MultiMotionCommand(CommandTerm):
     """Reference states of the next `goal_k` frames [B, K, 240] (held at clip end)."""
     return self.library.future(self.global_frame, self.cfg.goal_k)
 
+  def human_future(self) -> Tensor:
+    """Human poses of the next `goal_k` frames [B, K, 24, 7] (position, then quaternion
+    wxyz; held at clip end), library frame. The library must have human sidecars."""
+    return self.library.human_future(self.global_frame, self.cfg.goal_k)
+
   def assign_clips(self, env_ids: Tensor, clip_ids: Tensor) -> None:
     """Sets the clip that `env_ids` play in sampling="start" mode (from the next
     reset on)."""
@@ -347,7 +396,8 @@ class MultiMotionCommand(CommandTerm):
       self.metrics["sampling_entropy"][:] = 1.0
     elif self.cfg.sampling == "return":
       probs, _ = return_sampling_probs(
-        self.G_b, self.past_softmax, self.cfg.softmax_temp, self.cfg.mix
+        self.G_b, self.past_softmax, self.cfg.softmax_temp, self.cfg.mix,
+        self.cfg.softmax_cap,
       )
       bins = torch.multinomial(probs, n, replacement=True)
       frames = lib.sample_frames_in_bins(bins)
@@ -357,9 +407,47 @@ class MultiMotionCommand(CommandTerm):
       )
     else:
       raise ValueError(f"Unknown sampling mode {self.cfg.sampling!r}.")
+    if self.cfg.failure_reset > 0.0:  # Pre-failure restarts marked by `reset`.
+      restart = self.restart_frame[env_ids]
+      local = restart >= 0
+      frames = torch.where(local, restart, frames)
+      bins = torch.where(local, lib.frame_bin(restart.clamp(min=0)), bins)
+      self.restart_frame[env_ids] = -1
     # Never start on a clip's last frame, so the reset path's one-frame advance stays
     # inside the clip. The episode is credited to the sampled bin either way.
     return torch.minimum(frames, lib.clip_end(frames) - 1), bins
+
+  def _mark_failure_restarts(self, env_ids: Tensor) -> None:
+    """Pre-failure restarts (`cfg.failure_reset`): of `env_ids`, an env whose episode
+    just failed (terminated, not a time-out) after at least `failure_min_steps`
+    steps restarts, with probability `failure_reset`, its clip `failure_lookback` ±
+    `failure_jitter` frames before the failure frame (clamped to the clip), unless it
+    has done so `failure_max_consecutive` times in a row; every other env draws a
+    global start. `_sample_start` consumes the marks (`restart_frame`, -1 = none)."""
+    cfg = self.cfg
+    if cfg.failure_reset <= 0.0:
+      return
+    n = len(env_ids)
+    # The termination manager's flags of the last step (the env's `reset_terminated`,
+    # which only exists after the first step).
+    terminated = self._env.termination_manager.terminated[env_ids]
+    failed = terminated & (self.episode_steps[env_ids] >= cfg.failure_min_steps)
+    streak = self.consecutive_local[env_ids]
+    local = (
+      failed
+      & (streak < cfg.failure_max_consecutive)
+      & (torch.rand(n, device=self.device) < cfg.failure_reset)
+    )
+    frames = self.global_frame[env_ids]
+    jitter = torch.randint(
+      -cfg.failure_jitter, cfg.failure_jitter + 1, (n,), device=self.device
+    )
+    clip_start = self.library.clip_start[self.library.frame_clip[frames]]
+    restart = torch.maximum(frames - cfg.failure_lookback + jitter, clip_start)
+    self.restart_frame[env_ids] = torch.where(local, restart, torch.full_like(restart, -1))
+    self.consecutive_local[env_ids] = torch.where(
+      local, streak + 1, torch.zeros_like(streak)
+    )
 
   def _write_reference_state_to_sim(
     self,
@@ -475,9 +563,11 @@ class MultiMotionCommand(CommandTerm):
     ).clamp(min=0.0)  # G_b / G_max in [0, 1] (paper); penalties can make g < 0.
     self.G_b = fold_returns(self.G_b, self.start_bin[env_ids], g, finished, alpha)
     _, softmax = return_sampling_probs(
-      self.G_b, self.past_softmax, self.cfg.softmax_temp, self.cfg.mix
+      self.G_b, self.past_softmax, self.cfg.softmax_temp, self.cfg.mix,
+      self.cfg.softmax_cap,
     )
     self.past_softmax = (1.0 - alpha) * self.past_softmax + alpha * softmax
+    self._mark_failure_restarts(env_ids)  # Before the episode counters are cleared.
     self.disc_return[env_ids] = 0.0
     self.gamma_pow[env_ids] = 1.0
     self.episode_steps[env_ids] = 0
@@ -617,6 +707,19 @@ class MultiMotionCommandCfg(CommandTermCfg):
   softmax_temp: float = 25.0
   mix: tuple[float, float, float] = (0.5, 0.4, 0.1)
   """Weights of (uniform, return softmax, past softmax) in the reset-bin mixture."""
+  softmax_cap: float | None = None
+  """Cap on a bin's share of the return softmax term, as a multiple (>= 1) of the
+  uniform share (`return_sampling_probs(cap=)`); the EMA `past_softmax` inherits it.
+  None: no cap."""
+  failure_reset: float = 0.0
+  """Probability that an env whose episode failed after >= `failure_min_steps` steps
+  restarts `failure_lookback` ± `failure_jitter` frames before the failure instead of
+  drawing a global start (`_mark_failure_restarts`); at most `failure_max_consecutive`
+  times in a row. 0: off."""
+  failure_lookback: int = 8
+  failure_jitter: int = 4
+  failure_min_steps: int = 8
+  failure_max_consecutive: int = 3
   reset_norm: Literal["actual", "remaining"] = "remaining"
   """Horizon over which `reset` normalises an episode's return for `G_b`. "remaining":
   the counterfactual horizon fixed at the episode's start, min(episode cap, transitions
@@ -624,6 +727,13 @@ class MultiMotionCommandCfg(CommandTermCfg):
   an episode that runs to its clip end or the cap scores as under "actual". "actual":
   the steps the episode ran, so an early failure that tracked well scores high."""
   library_dtype: str = "float32"
+  human_root: str | None = None
+  """Root of the clips' human sidecars (`human_convert.sidecar_path`); None: the
+  default `<clip root>/human50`. The library has human data only if every clip has
+  a sidecar."""
+  goal_anchor: GoalAnchor = "reference"
+  """Frame of the motion goal's anchor position (`rewards_torch.goal_features`):
+  "reference" (position-free) or "robot" (goal version 1's robot-relative frame)."""
   goal_k: int = GOAL_K
   viz: MotionCommandCfg.VizCfg = field(default_factory=MotionCommandCfg.VizCfg)
 

@@ -3,14 +3,30 @@ fits the world model on k-step replay windows, improves the policy by one BPTT s
 through H imagined steps and fits the critic, with the Table A.5 hyperparameters,
 cosine LR decay, logging and checkpoints.
 
-Keypoint interface (`TrainCfg.kp_interface`, paper App. B):
-after the motion critic fit, one more BPTT step trains only the five-point keypoint
-encoder (`Trainer.improve_policy_kp`, distillation through the frozen world model,
-decoder and motion encoder) with its own Adam, and a second critic `critic_kp` is fit
-on those rollouts. Collection splits the envs between the interfaces: the first
-`kp_env_frac` of them act through the keypoint one with a mask per episode
-(`Trainer._policy_fn`, `_on_reset`). Off by default; the motion interface's update is
-the same either way.
+Human interface (`TrainCfg.kp_interface`): a human encoder reads the operator's 24
+SMPL joints and their Spine3's orientation relative to the robot torso per future
+frame, standardised by its own normaliser `heading_norm` (keypoint goal version 10),
+and feeds the shared decoder. After the motion critic fit, one more step through the
+frozen world model, decoder and motion encoder trains only the human encoder
+(`Trainer.improve_policy_kp`) with its own Adam, by one of two students
+(`kp_student`): "return" maximises the return with a second critic `critic_kp`, fit
+on those rollouts, and also pulls the student's action to the motion teacher's on
+its own imagined states and its latent to the teacher's; "copy" has only the two
+pulls (no critic). Each term is divided by a running scale of its own magnitude
+(`kp_loss_norm`, `TermScales`). Collection splits the envs between the
+interfaces: the first `kp_env_frac` of them act through the human one with a mask per
+episode (`Trainer._policy_fn`, `_on_reset`). The heading is on in a `kp_heading_frac`
+share of episodes and imagined rollouts (all by default), zeros in the rest. Off by
+default; the motion interface's update is the same either way.
+
+Direct human policy (`TrainCfg.policy_goal="human"`, v9): the human encoder is the
+policy's encoder. The motion step does not run; the human step is the policy step:
+its loss is -J through the frozen world model and critic plus a reconstruction term
+(`Policy.reconstruct`: the human latent and the morphology vector -> the normalised
+motion goal of the step), and it trains the human encoder, the decoder and the
+reconstruction head with one Adam (`kp_opt`). The motion critic is fit on its
+rollouts; every env collects through the human interface. The motion encoder is built
+but never trained or used.
 
 Throughput: the learned-model phases have fixed shapes, so their forward passes are
 compiled (`LearnedSteps`, `TrainCfg.compile`; CUDA graphs by default) and the Adam
@@ -25,24 +41,26 @@ optimiser step, the running normalisers pool all ranks' samples, the LRs are sca
 sqrt(W) (`lr_scale_sqrt_world_size`), and rank 0 alone logs (metrics pooled over the
 ranks) and checkpoints. Without a process group nothing of this runs.
 
-Multi-robot (`TrainCfg.robots`; spec 2026-10-22-shared-world-model): rank r simulates
-robot `robots[r]` on `subset_yamls[r]` with its own env, library, replay, reset
-sampler and running normalisers (never synced), and every network sees the robot's
-morphology vector (buffers of the modules, set once per rank). Only the shared modules
-(the world model always, the policy and critic with `share="all"`) start from rank
-0's parameters (parameters only: each robot keeps its own world-model normaliser,
-joint limits, default pose, residual scale, height statistics and morphology vector)
-and average their gradients; the LRs are not scaled. With `latent_align_weight` > 0
-the policy loss also pulls the ranks' motion latents of common reference frames
-together (`morphmimic.train.multi_robot`, `distributed.latent_alignment_loss`). Every
-rank logs and checkpoints its own robot under `<run_dir>/<robot>/`; rank 0 also prints
+Multi-robot (`TrainCfg.robots`): rank r simulates
+robot `robots[r]` on `subset_yamls[r]` with its own env, library, replay and reset
+sampler, and every network sees the robot's morphology vector (buffers of the
+modules, set once per rank). Only the shared modules (the world model always, the
+policy and critic with `share="all"`) start from rank 0's parameters (parameters
+only: each robot keeps its own world-model normaliser, joint limits, default pose,
+residual scale, height statistics and morphology vector) and average their
+gradients; the LRs are not scaled. The policy's running normalisers pool every
+rank's samples with `pool_norms` (default; else each robot's own), the human
+normaliser always. With `latent_align_weight` > 0 the policy loss also pulls the
+ranks' motion latents of common reference frames together
+(`morphmimic.train.multi_robot`, `distributed.latent_alignment_loss`). Every rank
+logs and checkpoints its own robot under `<run_dir>/<robot>/`; rank 0 also prints
 the pooled line and one line per robot.
 
 Robustness: every optimiser step is preceded by a non-finite guard (after the
 data-parallel averaging): a gradient with an inf / NaN norm is zeroed instead of
 clipped (`guarded_clip_grad_norm_`), and the zeroed steps are counted per log window
-(`NONFINITE_KEYS`: `wm/`, `policy/`, `critic/` and, with the keypoint interface, `kp/`,
-`critic_kp/nonfinite_steps`).
+(`NONFINITE_KEYS`: `wm/`, `policy/`, `critic/` and, with the human interface, `kp/`
+and (return student) `critic_kp/nonfinite_steps`).
 Checkpoints hold everything a resume restores (`Trainer.checkpoint`), and in a
 data-parallel run each one checks that the ranks' parameters are still identical.
 """
@@ -71,22 +89,36 @@ from torch import Tensor, nn
 
 from morphmimic.constants import (
   CRITIC_PRIV_DIM,
+  DT,
+  GOAL_ANCHORS,
   GOAL_DIM,
   GOAL_K,
   GOAL_VERSION,
   HIST_LEN,
+  HUMAN_FEAT_DIM,
+  HUMAN_HEADING_DIM,
   KP_GOAL_VERSION,
-  KP_FEAT_DIM,
   LOCAL_DIM,
-  NUM_KP,
+  NUM_HUMAN,
   PROPRIO_DIM,
   R_MAX,
+  GoalAnchor,
 )
+from morphmimic.data.human_convert import sidecar_path
+from morphmimic.data.manifest import load_subset
 from morphmimic.data.motion_library import MotionLibrary
 from morphmimic.env.commands import MultiMotionCommand, MultiMotionCommandCfg
 from morphmimic.env.env_cfg import COMMAND_NAME, morphmimic_env_cfg
 from morphmimic.env.morphmimic_env import MorphMimicEnv
-from morphmimic.model.keypoints import KpMaskMode, sample_kp_masks
+from morphmimic.model.human import (
+  HumanMaskMode,
+  drift_human_goal,
+  drift_human_poses,
+  heading_from_goal,
+  human_features_from_goal,
+  sample_human_drift,
+  sample_human_masks,
+)
 from morphmimic.model.policy import Critic, CriticCfg, Policy, PolicyCfg
 from morphmimic.model.rewards_torch import goal_features
 from morphmimic.model.state import FrameMode, StateNormalizer, canonicalize
@@ -106,8 +138,10 @@ from morphmimic.train.imagination import (
   ImaginationCfg,
   ImaginedRollout,
   ImaginedStep,
+  TermScales,
   act,
-  act_kp,
+  act_human,
+  anchor_kwargs,
   clip_grads_,
   critic_loss,
   finish_rollout,
@@ -115,13 +149,15 @@ from morphmimic.train.imagination import (
   frozen,
   gae_targets,
   guarded_clip_grad_norm_,
+  human_jitter_window,
+  human_window,
   imagination_noise,
   imagine_rollout,
   imagine_step,
-  imagine_step_kp,
-  kp_jitter_window,
+  imagine_step_human,
   noise_half_widths,
   policy_objective,
+  student_objective,
   target_values,
 )
 from morphmimic.train.multi_robot import CommonClipSampler, common_clip_names
@@ -150,13 +186,15 @@ REMOVED_CFG_FIELDS = frozenset({"eval_every"})
 # checkpoint whose cfg lacks the field was trained with. `Trainer.load` refuses a
 # checkpoint whose value differs from this run's (its networks or their inputs would
 # not match; for `reset_norm`, the restored sampler's G_b is on another scale) and
-# names the flags that load it.
+# names the flags that load it. `latent` is back at its legacy value by default; it
+# stays here so a checkpoint saved with another width is refused the same way.
 LEGACY_CFG_DEFAULTS: dict[str, object] = {
   "wm_frame": "heading",
   "residual_scale": "state",
   "termination": "learned",
   "reset_norm": "actual",
   "critic_anchor_pos": False,
+  "latent": 32,  # the default again since 2026-10-25; v3-recipe runs are 128.
 }
 # Fields added to TrainCfg since older checkpoints were saved, with the value those
 # runs had (assumed on resume when a checkpoint's cfg lacks the field; the trainer
@@ -174,13 +212,59 @@ ADDED_CFG_DEFAULTS: dict[str, object] = {
   "target_critic_alpha": None,
   "critic_target_clip": False,
   "actuator_delay": False,
+  # Every delayed run before 2026-10-28 drew 0-40 ms every physics step.
+  "actuator_delay_max_ms": 40.0,
+  "actuator_delay_fixed": False,
+  # The v3 recipe's switches, off in every v2 run.
+  "collect_det_frac": 0.0,
+  "clean_action_record": False,
+  "softmax_cap": None,
+  "failure_reset": 0.0,
+  # The human interface (keypoint goal versions 3-4): v2 runs trained their keypoint
+  # encoder by the return.
+  "kp_student": "return",
+  "human_root": None,
+  # Every run before the switch had the position-free goal.
+  "goal_anchor": "reference",
+  # Every multi-robot run before the switch fit each robot's own normalisers.
+  "pool_norms": False,
+  # Every run before v9 trained the motion encoder as the policy's.
+  "policy_goal": "motion",
+  # Every run before 2026-10-27 had no human drift.
+  "kp_drift": False,
+  # Every keypoint run had the target jitter on until 2026-10-27.
+  "kp_jitter": True,
 }
 # Fields a resume takes from the checkpoint's cfg (a cfg without the field: its
 # `ADDED_CFG_DEFAULTS` value) unless the run names them (`Trainer.load(explicit=)`):
 # training switches that change no network and whose default changed, so a resumed
 # run keeps the behaviour it was trained with (`critic_target_clip`: the target clamp
-# became the default after runs without it had started).
-RESUME_KEPT_FIELDS = ("critic_target_clip",)
+# became the default after runs without it had started; the v3 recipe's four
+# switches, the human interface's student, the pooled normalisers, the human drift
+# and the target jitter likewise).
+RESUME_KEPT_FIELDS = (
+  "critic_target_clip",
+  "collect_det_frac",
+  "clean_action_record",
+  "softmax_cap",
+  "failure_reset",
+  "kp_student",
+  "pool_norms",
+  "kp_drift",
+  "kp_jitter",
+)
+# Terms of the human student's loss (`student_objective`), in `TermScales` order.
+# The checkpoint entry `kp_loss_scales` stores the scales by position, so this order
+# must not change (a new term goes at the end).
+KP_LOSS_TERMS = ("return", "copy", "align")
+# Terms of the direct human policy's loss (`policy_goal="human"`, `student_objective`
+# with the "direct" student), in `TermScales` order (stored by position likewise).
+DIRECT_LOSS_TERMS = ("return", "recon")
+# The human-interface flags the direct human policy ignores, with their defaults
+# (`Trainer._resolve_cfg` warns when one is set away from it).
+DIRECT_IGNORED_FIELDS = {
+  "kp_student": "return", "kp_action_weight": 1.0, "kp_align_weight": 1.0
+}
 # Default latent-alignment weight of a multi-robot run.
 MULTI_ROBOT_LATENT_ALIGN_WEIGHT = 0.05
 # Floor (m) of the per-body height std of a multi-robot world model's height
@@ -205,7 +289,10 @@ ROBOT_LINE_KEYS = (
   "policy/latent_align_loss",
   "policy/latent_dist",
 )
-# State-dict prefix of the policy's keypoint encoder (`Policy.kp_encoder`).
+# State-dict prefix of the policy's human encoder (`Policy.human_encoder`).
+_HUMAN_ENCODER_PREFIX = "human_encoder."
+# State-dict prefix of the five-point keypoint encoder of keypoint goal versions 1-2,
+# stripped from such checkpoints on load.
 _KP_ENCODER_PREFIX = "kp_encoder."
 # Data parallel: ranks whose parameter checksums differ by more than this (relative)
 # have diverged (`Trainer._check_ranks_identical`).
@@ -273,10 +360,39 @@ class TrainCfg:
   gamma: float = 0.99
   lam: float = 0.95
   action_noise: float = 0.1
+  # The v3 recipe's switches, back at their v2 values since
+  # 2026-10-25 (the teacher's training return went flat from 4k under the bundle while
+  # the v2 specialist kept climbing); each v3 value stays reachable by flag. The four
+  # below resume at a checkpoint's values (`RESUME_KEPT_FIELDS`); `latent` changes the
+  # networks (`LEGACY_CFG_DEFAULTS`).
+  collect_det_frac: float = 0.0
+  """Fraction of the collection envs (the first round(f * num_envs)) that act without
+  the exploration noise, so the replay also holds the states the deterministic policy
+  reaches (`Collector.det_frac`). v2 (default): 0 (every env explores); v3 recipe
+  0.25."""
+  clean_action_record: bool = False
+  """The env records the policy's clean action (mjlab's `last_action`, so the
+  `prev_action` observation and the action-rate penalty) and executes a + eps; the
+  replay logs the executed action for the world model (`Collector`). v2 (default): off
+  (the env sees and records the noisy action); v3 recipe on."""
+  softmax_cap: float | None = None
+  """Cap on a reset bin's share of the return-based softmax term, as a multiple (>= 1)
+  of the uniform share (`return_sampling_probs(cap=)`). v2 (default): None (no cap);
+  v3 recipe 4."""
+  failure_reset: float = 0.0
+  """Probability that an env whose episode failed restarts a few frames before the
+  failure instead of drawing a global start (`MultiMotionCommandCfg.failure_reset`).
+  v2 (default): 0; v3 recipe 0.5."""
   actuator_delay: bool = True
-  """Randomize actuator position-target delay over 0–40 ms (0–8 physics steps),
-  resampling every physics step. `--no-actuator-delay` disables it. Nominal
-  evaluation remains delay-free."""
+  """Randomize actuator position-target delay over 0 to `actuator_delay_max_ms`.
+  `--no-actuator-delay` disables it. Nominal evaluation remains delay-free."""
+  actuator_delay_max_ms: float = 20.0
+  """Upper end of the actuator delay (a multiple of the 5 ms physics step)."""
+  actuator_delay_fixed: bool = True
+  """Draw each env's delay once per episode and hold it: a real robot's latency is
+  steady, and a policy trained on a delay redrawn every physics step kept re-stepping
+  after a step on our G1 at a few ms more latency. False (with 40 ms: runs before
+  2026-10-28): redraw it every physics step."""
   hist_len: int = HIST_LEN
   ckpt_every: int = 4000
   log_every: int = 50
@@ -323,6 +439,12 @@ class TrainCfg:
   the training thresholds (no BCE term). See `world_model.HazardHead`."""
   policy_hidden: tuple[int, ...] = (2048, 1024, 512, 256)
   """Hidden widths of the motion encoder and of the decoder (Table A.4)."""
+  latent: int = 32
+  """Width of the policy's goal latent z (`PolicyCfg.latent`, the encoder -> decoder
+  bottleneck of every interface). Paper and v2 (default): 32; the v3 recipe's 128
+  (runs of 2026-10-24/25) resumes only with `--latent 128` (`LEGACY_CFG_DEFAULTS`).
+  Saved in the checkpoint cfg; the policy loader and the ONNX export read it (32 when
+  absent)."""
   critic_hidden: tuple[int, ...] = (256, 128)
   """Hidden widths of the critic (Table A.4)."""
   critic_layer_norm: bool = True
@@ -338,10 +460,17 @@ class TrainCfg:
   (goal version 2) does not carry, so without it the critic cannot see that drift.
   `--no-critic-anchor-pos` gives the critic without it (needed to resume checkpoints
   from before the input). Not in the paper."""
+  goal_anchor: GoalAnchor = "reference"
+  """Frame of the motion goal's anchor position (`rewards_torch.goal_features`):
+  "reference", the reference's own heading frame (goal
+  version 2, position-free); "robot", the current robot anchor frame (goal version
+  1's features), which needs the robot's pose at deploy (a state estimator). The
+  motion interface only: "robot" refuses `kp_interface`. A checkpoint resumes, loads
+  for evaluation and exports only under its own anchor (`check_goal_anchor`)."""
   avoid_clip_end: bool = True
   """Start imagined rollouts only where the horizon and the goal lookahead stay inside
-  the clip (`remaining(frame) >= horizon + GOAL_K`), so no rollout reaches a clip end.
-  The last
+  the clip (`remaining(frame) >= horizon + GOAL_K`), so no rollout reaches a clip end,
+  as in the zita-ch/morphmimic_vibed and SupermimicX2 re-implementations. The last
   horizon + K frames of each clip then get no imagined gradient. Not in the paper;
   `--no-avoid-clip-end` lets rollouts reach clip ends."""
   clip_end_terminal: bool = False
@@ -375,7 +504,7 @@ class TrainCfg:
   stay float32; TF32 elsewhere). Not in the paper, which trains at TF32.
   `--no-bf16` runs the MLPs at TF32."""
   act: str = "elu"
-  """Activation of all networks (mjlab/BeyondMimic default)."""
+  """Activation of all networks (the mjlab/BeyondMimic default)."""
   compile: CompileMode = "reduce-overhead"
   """`torch.compile` mode of the learned-model phases (`LearnedSteps`); "none" runs
   them eagerly, "reduce-overhead" replays them as CUDA graphs."""
@@ -417,22 +546,76 @@ class TrainCfg:
   mode, 0 otherwise (saved resolved)."""
   latent_align_batch: int = 1024
   """Reference frames (common clips) per policy update of the latent alignment."""
+  pool_norms: bool = True
+  """Multi-robot runs: pool the policy's observation and goal normalisers across the
+  robots, as the human normaliser is. One scaling for every robot. Single-robot runs
+  are unaffected. v3 default; v2 runs: `--no-pool-norms`. Kept on resume."""
   kp_interface: bool = False
-  """Also train the five-point keypoint interface (App. B): a
-  keypoint encoder feeding the shared decoder, its own critic `critic_kp`, one
-  distillation step per iteration through the frozen world model."""
+  """Also train the human interface: a human encoder that reads the operator's 24
+  SMPL joints and feeds the shared decoder, trained by one extra step per iteration
+  through the frozen world model (`kp_student`). Every clip needs a human sidecar
+  (`human_root`)."""
   kp_env_frac: float = 0.5
-  """Fraction of the collection envs that act through the keypoint interface (App. G)."""
+  """Fraction of the collection envs that act through the human interface."""
   kp_imag_batch: int = 4096
-  """Imagined rollouts of the keypoint step (the motion step's is `imag_batch`)."""
-  kp_masking: KpMaskMode = "mixed"
-  """Training masks of the keypoint goal (`sample_kp_masks`): "mixed" (one encoder for
-  every point subset and preview length), "full" or "upper" (dedicated encoders)."""
-  kp_jitter: bool = True
-  """Target jitter on the keypoint actor's input in imagination (SONIC Table S4)."""
-  kp_align_weight: float = 0.1
-  """Weight of the latent alignment ||z_kp - sg(z_motion)||^2 in the keypoint loss
-  (App. G)."""
+  """Imagined rollouts of the human step (the motion step's is `imag_batch`)."""
+  kp_masking: HumanMaskMode = "mixed"
+  """Which joints and preview frames the human encoder sees in training
+  (`sample_human_masks`): "mixed" (all 24 joints or the five-point set, random
+  preview length), or one fixed set: "full", "five", "six" or "three"."""
+  kp_preview_mix: bool = True
+  """Under `--kp-masking mixed`, draw the visible preview length per episode (K with
+  probability 0.5, 1 with 0.2, else uniform); off = every episode and rollout sees
+  the full K-frame preview, the deploy case when the robot runs 0.2 s behind the
+  operator. The slot mix (full / five) is unchanged."""
+  kp_heading_frac: float = 1.0
+  """Share of collection episodes and imagined rollouts that see the heading block
+  (the human Spine3's orientation relative to the robot torso). 1.0 = every episode
+  and rollout sees the block; lower values zero it in the rest, to train a fallback
+  without it."""
+  kp_student: Literal["copy", "return"] = "return"
+  """How the human encoder learns. "return" (default, as v2): it maximises the return
+  through the world model, with its own critic `critic_kp`, plus the action copy and
+  the latent pull. "copy" (the v3 and v4 default): the action copy and the latent pull
+  only, on its own imagined states; no critic, no return term. Kept on resume."""
+  kp_jitter: bool = False
+  """Target jitter on the human encoder's input in imagination: each joint and frame
+  on its own (`HUMAN_JITTER`, HEFT's sizes). Off by default since 2026-10-27, with
+  `kp_drift`: the three-robot run with both on chattered on the real G1, v13 (both
+  off) does not. Kept on resume."""
+  kp_drift: bool = False
+  """Slow drift of the whole human skeleton plus per-frame noise (`HUMAN_DRIFT`,
+  HEFT's student motion randomisation) on the human encoder's input, drawn per
+  imagined rollout and per collection episode of the envs that act on the human goal.
+  The motion goal, the reward and the critic stay on the clean reference. Off by
+  default since 2026-10-27 (`kp_jitter`). Kept on resume."""
+  kp_action_weight: float = 1.0
+  """Weight of the action copy (squared gap to the motion teacher's action on the
+  student's imagined states) in the human loss (both students)."""
+  kp_align_weight: float = 1.0
+  """Weight of the latent alignment ||z_human - sg(z_motion)||^2 in the human loss
+  (both students)."""
+  kp_loss_norm: bool = True
+  """Divide each term of the human loss (return, action copy, latent pull) by a
+  running average of its own magnitude (`TermScales`), so the weights are relative.
+  The scales are saved in the checkpoint."""
+  human_root: str | None = None
+  """Root of the clips' human sidecars (`<root>/<date>/<stem>.npz`). None:
+  `<clip root>/human50`."""
+  policy_goal: Literal["motion", "human"] = "motion"
+  """The goal the policy acts on. "motion" (default): the motion encoder reads the
+  retargeted robot reference (with `kp_interface`, the human encoder is a student of
+  it). "human" (v9, the direct human policy): the human encoder is the policy's
+  encoder, trained with the decoder by the return through the world model plus the
+  reconstruction term (`recon_weight`); implies `kp_interface`; the motion encoder is
+  never trained, every env collects through the human interface (`kp_env_frac` is
+  ignored) and `kp_student`, `kp_action_weight`, `kp_align_weight` are ignored. The
+  robot reference still gives the reward, the critic's input and the reconstruction
+  target. A resume needs the checkpoint's value."""
+  recon_weight: float = 1.0
+  """`policy_goal="human"`: weight of the reconstruction term (the human latent
+  decoded back to the normalised motion goal) next to the return, each over its
+  running scale (`kp_loss_norm`)."""
 
 
 class _PhaseTimer:
@@ -580,15 +763,21 @@ class LearnedSteps:
     critic's values when there is one;
   - `critic_loss(ro, targets, idx)`: `critic_loss` of one critic minibatch.
 
-  With the keypoint interface (`critic_kp` and `kp_norm` given) also:
+  With the human interface (`human_norm` and `heading_norm` given) also:
 
-  - `imagine_step_kp(...)` / `finish_rollout_kp(...)`: `imagination.imagine_step_kp`
-    and `finish_rollout` with `critic_kp`, run by `policy_loss_kp(start, noise,
-    point_mask, frame_mask, jitter)` -> (-J + `kp_align_weight` x alignment, rollout);
-    call it within `frozen(wm, critic_kp, policy.decoder, policy.encoder)`;
-  - `critic_targets_kp(ro)`: `gae_targets` of a keypoint rollout (call it under
-    no_grad), on `target_critic_kp`'s values when there is one;
-  - `critic_loss_kp(ro, targets, idx)`: `critic_loss` of `critic_kp`.
+  - `imagine_step_kp(...)` / `finish_rollout_kp(...)`: `imagination.imagine_step_human`
+    with the student `kp_student` and `finish_rollout` with `critic_kp` (None under
+    the copy student: zero values; the motion `critic` under the direct student, the
+    direct human policy), run by `policy_loss_kp(start, noise, point_mask,
+    frame_mask, heading_mask, jitter, human_win)` -> (the student's loss, rollout,
+    raw terms) (`student_objective` with `kp_action_weight`, `kp_align_weight`,
+    `recon_weight` and the scales of `kp_loss_scales`, None: no scaling); call it
+    within `frozen(wm, policy.decoder, policy.encoder[, critic_kp])` (direct:
+    `frozen(wm, policy.encoder, critic)`);
+  - with `critic_kp` (the return student only) `critic_targets_kp(ro)`: `gae_targets`
+    of a human rollout (call it under no_grad), on `target_critic_kp`'s values when
+    there is one, and `critic_loss_kp(ro, targets, idx)`: `critic_loss` of
+    `critic_kp`.
 
   The imagination is compiled per step, not unrolled into one graph: Inductor's
   compile time grows linearly with the graph (~25 s per unrolled imagination step,
@@ -613,14 +802,23 @@ class LearnedSteps:
     goal_norm: RunningNormalizer,
     mode: CompileMode = "none",
     *,
+    human_norm: RunningNormalizer | None = None,
+    heading_norm: RunningNormalizer | None = None,
+    kp_student: Literal["copy", "return", "direct"] = "return",
     critic_kp: Critic | None = None,
-    kp_norm: RunningNormalizer | None = None,
-    kp_align_weight: float = 0.0,
+    kp_align_weight: float = 1.0,
+    kp_action_weight: float = 1.0,
+    kp_loss_scales: TermScales | None = None,
     target_critic: Critic | None = None,
     target_critic_kp: Critic | None = None,
+    recon_weight: float = 1.0,
   ) -> None:
-    if (critic_kp is None) != (kp_norm is None):
-      raise ValueError("critic_kp and kp_norm are given together (keypoint interface)")
+    if (human_norm is None) != (heading_norm is None):
+      raise ValueError("the human interface needs both human_norm and heading_norm")
+    if critic_kp is not None and (human_norm is None or kp_student != "return"):
+      raise ValueError("critic_kp belongs to the human interface's return student")
+    if human_norm is not None and kp_student == "return" and critic_kp is None:
+      raise ValueError("the return student needs critic_kp")
     self.wm = wm
     self.policy = policy
     self.critic = critic
@@ -631,9 +829,14 @@ class LearnedSteps:
     self.obs_norm = obs_norm
     self.goal_norm = goal_norm
     self.critic_kp = critic_kp
-    self.kp_norm = kp_norm
+    self.human_norm = human_norm
+    self.heading_norm = heading_norm
+    self.kp_student = kp_student
     self.kp_align_weight = kp_align_weight
-    self.keypoint = critic_kp is not None
+    self.kp_action_weight = kp_action_weight
+    self.kp_loss_scales = kp_loss_scales
+    self.recon_weight = recon_weight
+    self.human = human_norm is not None
     self.mode = mode
     self.cudagraphs = mode == "reduce-overhead"
     self.wm_loss = self._wm_loss
@@ -657,9 +860,10 @@ class LearnedSteps:
     self.finish_rollout = compile_(self._finish_rollout)
     self.critic_targets = compile_(self._critic_targets)
     self.critic_loss = compile_(self._critic_loss)
-    if self.keypoint:
+    if self.human:
       self.imagine_step_kp = compile_(self._imagine_step_kp)
       self.finish_rollout_kp = compile_(self._finish_rollout_kp)
+    if critic_kp is not None:
       self.critic_targets_kp = compile_(self._critic_targets_kp)
       self.critic_loss_kp = compile_(self._critic_loss_kp)
 
@@ -667,12 +871,22 @@ class LearnedSteps:
     return self.wm.fit_loss(batch, self.library)
 
   def _imagine_step(self, *args: Tensor) -> ImaginedStep:
-    """`imagine_step` of this policy (args after the networks)."""
-    return imagine_step(self.wm, self.policy, self.obs_norm, self.goal_norm, *args)
+    """`imagine_step` of this policy (args after the networks), in the imagination
+    cfg's goal anchor."""
+    return imagine_step(
+      self.wm,
+      self.policy,
+      self.obs_norm,
+      self.goal_norm,
+      *args,
+      **anchor_kwargs(self.imag_cfg.goal_anchor),
+    )
 
   def _finish_rollout(self, *args: Any) -> ImaginedRollout:
     """`finish_rollout` of this critic (args after the networks)."""
-    return finish_rollout(self.wm, self.critic, self.goal_norm, *args)
+    return finish_rollout(
+      self.wm, self.critic, self.goal_norm, *args, **anchor_kwargs(self.imag_cfg.goal_anchor)
+    )
 
   def policy_loss(
     self, start: StartBatch, noise: Tensor
@@ -703,15 +917,27 @@ class LearnedSteps:
     return critic_loss(self.critic, ro, targets, idx)
 
   def _imagine_step_kp(self, *args: Tensor) -> ImaginedStep:
-    """`imagine_step_kp` of this policy and keypoint normaliser (args after the
-    networks)."""
-    return imagine_step_kp(
-      self.wm, self.policy, self.obs_norm, self.goal_norm, self.kp_norm, *args
+    """`imagine_step_human` of this policy, human normalisers and student (args after
+    the student)."""
+    return imagine_step_human(
+      self.wm,
+      self.policy,
+      self.obs_norm,
+      self.goal_norm,
+      self.human_norm,
+      self.heading_norm,
+      self.kp_student,
+      *args,
+      **anchor_kwargs(self.imag_cfg.goal_anchor),
     )
 
   def _finish_rollout_kp(self, *args: Any) -> ImaginedRollout:
-    """`finish_rollout` of the keypoint critic (args after the networks)."""
-    return finish_rollout(self.wm, self.critic_kp, self.goal_norm, *args)
+    """`finish_rollout` of the human critic (None under copy: zero values; the motion
+    critic under direct; args after the networks)."""
+    critic = self.critic if self.kp_student == "direct" else self.critic_kp
+    return finish_rollout(
+      self.wm, critic, self.goal_norm, *args, **anchor_kwargs(self.imag_cfg.goal_anchor)
+    )
 
   def policy_loss_kp(
     self,
@@ -719,14 +945,19 @@ class LearnedSteps:
     noise: Tensor,
     point_mask: Tensor,
     frame_mask: Tensor,
+    heading_mask: Tensor,
     jitter: Tensor,
-  ) -> tuple[Tensor, ImaginedRollout]:
-    """(-J + `kp_align_weight` x alignment, rollout) of the keypoint rollout from
-    `start` with the sensor `noise`, the masks `point_mask` [B, 5] and `frame_mask`
-    [B, K] of every step and the target jitter window `jitter` [B, H + K, 5, 6]
-    (`kp_jitter_window`; step t sees `[:, t : t + K]`), through the (compiled) keypoint
-    step and finish units. Call within `frozen(wm, critic_kp, policy.decoder,
-    policy.encoder)`."""
+    human_win: Tensor,
+  ) -> tuple[Tensor, ImaginedRollout, dict[str, Tensor]]:
+    """(loss, rollout, terms) of the human rollout from `start` with the sensor
+    `noise`, the masks `point_mask` [B, 24], `frame_mask` [B, K] and `heading_mask`
+    [B] of every step, the target jitter window `jitter` [B, H + K, 24, 6]
+    (`human_jitter_window`) and the human poses `human_win` [B, H + K, 24, 7]
+    (`human_window`), step t seeing `[:, t : t + K]` of both, through the (compiled)
+    human step and finish units. The loss and the raw detached terms are
+    `student_objective`'s (no "return" term under copy), with the scales of
+    `kp_loss_scales` before this step's update. Call within `frozen(wm,
+    policy.decoder, policy.encoder[, critic_kp])`."""
     ro = imagine_rollout(
       self.wm,
       self.policy,
@@ -739,9 +970,24 @@ class LearnedSteps:
       self.goal_norm,
       step=self.imagine_step_kp,
       finish=self.finish_rollout_kp,
-      extras=lambda t: (point_mask, frame_mask, jitter[:, t : t + GOAL_K]),
+      extras=lambda t: (
+        point_mask,
+        frame_mask,
+        heading_mask,
+        jitter[:, t : t + GOAL_K],
+        human_win[:, t : t + GOAL_K],
+      ),
     )
-    return policy_objective(ro, self.imag_cfg, self.kp_align_weight), ro
+    loss, terms = student_objective(
+      ro,
+      self.imag_cfg,
+      self.kp_student,
+      self.kp_action_weight,
+      self.kp_align_weight,
+      None if self.kp_loss_scales is None else self.kp_loss_scales.scales(),
+      recon_weight=self.recon_weight,
+    )
+    return loss, ro, terms
 
   def _critic_targets_kp(self, ro: ImaginedRollout) -> Tensor:
     if self.target_critic_kp is not None:
@@ -776,6 +1022,18 @@ def _flag_arg(key: str, value: object) -> str:
   return f"--{name} {value}"
 
 
+def check_goal_anchor(cfg: dict[str, Any], anchor: str, path: str | Path) -> None:
+  """Raises ValueError when the checkpoint cfg `cfg` (a cfg without `goal_anchor`:
+  "reference") was trained with another goal anchor than `anchor`: the goal features
+  of the two anchors are not interchangeable."""
+  saved = cfg.get("goal_anchor", ADDED_CFG_DEFAULTS["goal_anchor"])
+  if saved != anchor:
+    raise ValueError(
+      f"checkpoint {path} was trained with --goal-anchor {saved}; pass --goal-anchor"
+      f" {saved}"
+    )
+
+
 def _field_defaults(cfg: Any) -> dict[str, Any]:
   """Default of every field of the dataclass `cfg` that has one."""
   out = {}
@@ -798,6 +1056,102 @@ def _keep_fused(opt: torch.optim.Optimizer, fused: bool) -> None:
       state = opt.state.get(param, {})
       if "step" in state:
         state["step"] = state["step"].to(param.device if fused else "cpu")
+
+
+# Policy prefix and normaliser key of the keypoint interface parts that an older
+# keypoint goal version leaves in a checkpoint (`_stale_kp_parts`).
+_STALE_KP_KEYS = {
+  "five-point": (_KP_ENCODER_PREFIX, ("kp_norm",)),
+  "human": (_HUMAN_ENCODER_PREFIX, ("human_norm", "heading_norm")),
+}
+
+
+# What the human goal of each stale keypoint goal version was (`_stale_kp_error`).
+_OLD_HUMAN_GOALS = {
+  3: "human orientations relative to the robot pelvis",
+  4: "the anchor heading frame, no heading error",
+  5: "the anchor heading frame with the yaw-only heading error",
+  6: "the relative orientation block fed raw, without its normaliser",
+  7: "the human anchor's orientation relative to the robot pelvis",
+  8: "version 7 plus the human anchor's past positions",
+  9: "version 7 plus local rotations and velocities per slot",
+}
+
+
+def _stale_kp_parts(ckpt: dict[str, Any]) -> str | None:
+  """Which keypoint interface of an older keypoint goal version `ckpt` holds parts
+  of, dropped on load: "five-point" (versions 1-2: `kp_encoder.*`, `kp_norm` or
+  `critic_kp`), "human" (versions 3-9: `human_encoder.*`, `human_norm`,
+  `heading_norm` or `critic_kp`), else None."""
+  version = int(ckpt.get("kp_goal_version", 1))
+  if version >= KP_GOAL_VERSION:
+    return None
+  stale = "five-point" if version <= 2 else "human"
+  prefix, norms = _STALE_KP_KEYS[stale]
+  has_parts = (
+    any(key.startswith(prefix) for key in ckpt["policy"])
+    or any(norm in ckpt for norm in norms)
+    or "critic_kp" in ckpt
+  )
+  return stale if has_parts else None
+
+
+def _without_stale_kp_parts(ckpt: dict[str, Any], stale: str) -> dict[str, Any]:
+  """`ckpt` without the keypoint interface parts `stale` (`_stale_kp_parts`): the
+  policy's encoder keys, the normalisers, `critic_kp`, `target_critic_kp` and the
+  `kp` and `critic_kp` optimiser states."""
+  prefix, norms = _STALE_KP_KEYS[stale]
+  parts = (*norms, "critic_kp", "target_critic_kp")
+  out = {key: value for key, value in ckpt.items() if key not in parts}
+  out["policy"] = {
+    key: value for key, value in ckpt["policy"].items() if not key.startswith(prefix)
+  }
+  if "optim" in ckpt:
+    out["optim"] = {
+      key: value for key, value in ckpt["optim"].items() if key not in ("kp", "critic_kp")
+    }
+  return out
+
+
+def _stale_kp_error(
+  path: str | Path, ckpt: dict[str, Any], stale: str, hint: str
+) -> str:
+  """The refusal of a checkpoint with `stale` keypoint parts for the keypoint
+  interface; `hint` says how its motion interface loads."""
+  version = int(ckpt.get("kp_goal_version", 1))
+  if stale == "five-point":
+    return (
+      f"checkpoint {path} was trained on keypoint goal version {version} (five"
+      f" robot bodies); this code builds version {KP_GOAL_VERSION} (the human"
+      " skeleton), so its keypoint encoder, normaliser and"
+      f" critic do not carry over. Its motion interface loads {hint}, and its"
+      " five-point interface runs with the earlier release (commit aa40fe4)"
+    )
+  return (
+    f"checkpoint {path} was trained on keypoint goal version {version}"
+    f" ({_OLD_HUMAN_GOALS[version]}); this code builds version {KP_GOAL_VERSION}"
+    " (version 7's goal with the standardised orientation block measured torso to"
+    " torso: the human Spine3 orientation relative to the robot torso, 6D per future"
+    " frame), so its human"
+    " encoder and normaliser do not carry over; the motion interface loads"
+    f" ({hint})"
+  )
+
+
+def _stale_kp_warning(path: str | Path, ckpt: dict[str, Any], stale: str) -> str:
+  """The warning when the `stale` keypoint parts are dropped and the motion interface
+  loads."""
+  version = int(ckpt.get("kp_goal_version", 1))
+  if stale == "five-point":
+    return (
+      f"checkpoint {path}: dropped its five-point keypoint parts (goal version"
+      f" {version}); the motion interface loads"
+    )
+  return (
+    f"checkpoint {path}: dropped its human interface (keypoint goal version {version},"
+    f" {_OLD_HUMAN_GOALS[version]}): its human encoder and normaliser do not carry"
+    " over; the motion interface loads"
+  )
 
 
 def check_residual_scale(
@@ -905,12 +1259,16 @@ class Trainer:
   collector, optimisers (see the module docstring). Under a process group it is one
   data-parallel rank (`rank`, `world_size`; its env is seeded `cfg.seed + rank`).
 
-  With `cfg.kp_interface` the policy also has the keypoint encoder and the trainer the
-  keypoint parts `critic_kp`, `kp_norm`, `kp_opt` (the keypoint encoder's Adam) and
-  `critic_kp_opt`; without it they are None. Likewise the collection split: `kp_env`
-  [N] (the first `round(kp_env_frac * N)` envs act through the keypoint interface) and
-  every env's current episode masks `kp_point_mask` [N, 5], `kp_frame_mask` [N, K]
-  (drawn again at each of the env's resets).
+  With `cfg.kp_interface` the policy also has the human encoder and the trainer
+  `human_norm` and `heading_norm` (both pooled over every rank) and `kp_opt` (the
+  human encoder's Adam) and, under the return student only, `critic_kp` and
+  `critic_kp_opt`; otherwise they are None. Likewise the collection split: `kp_env` [N] (the first
+  `round(kp_env_frac * N)` envs act through the human interface) and every env's
+  current episode masks `kp_point_mask` [N, 24], `kp_frame_mask` [N, K],
+  `kp_heading_mask` [N] (drawn again at each of the env's resets). Building it
+  without human sidecars raises RuntimeError. Under `cfg.policy_goal == "human"` every
+  env is a `kp_env`, `policy_opt` and `critic_kp` are None and `kp_opt` also owns the
+  decoder and the reconstruction head (`_kp_parameters`).
 
   `it` counts completed iterations. Runs log to `run_dir` = `<log_dir>/<run_name or
   timestamp>` (tensorboard always, wandb if `cfg.wandb`) and write checkpoints there
@@ -948,17 +1306,31 @@ class Trainer:
       subset_yaml=cfg.subset_yaml,
       num_envs=cfg.num_envs,
       actuator_delay=cfg.actuator_delay,
+      actuator_delay_max_s=cfg.actuator_delay_max_ms / 1000,
+      actuator_delay_fixed=cfg.actuator_delay_fixed,
+      human_root=cfg.human_root,
+      goal_anchor=cfg.goal_anchor,
     )
     env_cfg.seed = cfg.seed + self.rank
     command_cfg = env_cfg.commands[COMMAND_NAME]
     assert isinstance(command_cfg, MultiMotionCommandCfg)
     command_cfg.library_dtype = cfg.library_dtype
     command_cfg.reset_norm = cfg.reset_norm
+    command_cfg.softmax_cap = cfg.softmax_cap
+    command_cfg.failure_reset = cfg.failure_reset
     self.env = MorphMimicEnv(env_cfg, device=device)
     command = self.env.command_manager.get_term(COMMAND_NAME)
     assert isinstance(command, MultiMotionCommand)
     self.command = command
     self.library = command.library
+    if cfg.kp_interface and not self.library.has_human:
+      first_clip = load_subset(cfg.subset_yaml)[0]
+      root = sidecar_path(first_clip, cfg.human_root).parent.parent
+      self.env.close()
+      raise RuntimeError(
+        f"--kp-interface needs human sidecars for every clip (none under {root});"
+        " run morphmimic.scripts.convert_human"
+      )
 
     # The world model works on the canonical 29 joints: the robot's native soft limits
     # and default pose go through its translator (the identity on the G1).
@@ -992,7 +1364,9 @@ class Trainer:
         dec_hidden=cfg.policy_hidden,
         act=cfg.act,
         hist_len=cfg.hist_len,
-        keypoint=cfg.kp_interface,
+        latent=cfg.latent,
+        human=cfg.kp_interface,
+        recon=cfg.policy_goal == "human",
         bf16=cfg.bf16,
         morph_dim=morph_actor.numel(),
         film=bool(cfg.decoder_film),
@@ -1005,21 +1379,26 @@ class Trainer:
       priv_dim=CRITIC_PRIV_DIM if cfg.critic_anchor_pos else 0,
     )
     self.critic = Critic(critic_cfg).to(device)
-    # Multi-robot mode: each robot's running normalisers are its own (no pooling).
-    sync = distributed and not self.multi
-    self.obs_norm = RunningNormalizer(PROPRIO_DIM, sync=sync).to(device)
-    self.goal_norm = RunningNormalizer(GOAL_DIM, sync=sync).to(device)
-    self.critic_kp: Critic | None = None
-    self.kp_norm: RunningNormalizer | None = None
+    self._critic_cfg = critic_cfg
+    # Multi-robot mode: the observation and goal normalisers pool every robot's
+    # samples with `pool_norms` (one scaling for the shared policy), else each robot's
+    # are its own.
+    policy_sync = distributed and (not self.multi or cfg.pool_norms)
+    self.obs_norm = RunningNormalizer(PROPRIO_DIM, sync=policy_sync).to(device)
+    self.goal_norm = RunningNormalizer(GOAL_DIM, sync=policy_sync).to(device)
+    self.human_norm: RunningNormalizer | None = None
+    self.heading_norm: RunningNormalizer | None = None
     if cfg.kp_interface:
-      self.critic_kp = Critic(critic_cfg).to(device)
-      self.kp_norm = RunningNormalizer(KP_FEAT_DIM, sync=sync).to(device)
+      # Pooled over every rank, in multi-robot mode too: the human goal is the same
+      # for every robot; the heading block likewise.
+      self.human_norm = RunningNormalizer(HUMAN_FEAT_DIM, sync=distributed).to(device)
+      self.heading_norm = RunningNormalizer(
+        HUMAN_HEADING_DIM, sync=distributed
+      ).to(device)
     if cfg.morphology:
       # The encoders never see the morphology; the critics get the whole vector.
       self.wm.set_morphology(morph)
       self.critic.set_morphology(morph)
-      if self.critic_kp is not None:
-        self.critic_kp.set_morphology(morph)
       self.policy.set_morphology(morph_actor)
     if self.multi:
       # Bodies of different size give comparable height inputs (root frame).
@@ -1027,18 +1406,19 @@ class Trainer:
     # Modules with one copy over the ranks (gradients averaged): all in a
     # single-robot run; in multi-robot mode the world model with share="wm", the
     # policy (every encoder) and the critics with share="policy", all with "all".
-    critics_kp = () if self.critic_kp is None else (self.critic_kp,)
-    self._shared: tuple[nn.Module, ...] = (
-      self.wm, self.policy, self.critic, *critics_kp
-    )
+    # `critic_kp` follows the critic (`_bind_kp_student`).
+    self._shared: tuple[nn.Module, ...] = (self.wm, self.policy, self.critic)
     if self.multi and cfg.share == "wm":
       self._shared = (self.wm,)
     elif self.multi and cfg.share == "policy":
-      self._shared = (self.policy, self.critic, *critics_kp)
+      self._shared = (self.policy, self.critic)
     if distributed and self.multi:
       # The shared modules start from rank 0's parameters; every buffer (the robot's
       # normaliser, limits, default pose, height statistics, morphology) stays its own.
       broadcast_params_(*self._shared)
+      if cfg.pool_norms:
+        # Pooled normalisers start from rank 0's, so the ranks' copies agree.
+        broadcast_(self.obs_norm, self.goal_norm, *self._kp_modules())
     elif distributed:
       # All ranks start from rank 0's networks and (state, input) normalisers.
       broadcast_(
@@ -1063,24 +1443,12 @@ class Trainer:
     # rank, so it stays identical without gradients or broadcasts (`_shared` puts it
     # in the checkpoint-time comparison).
     self.target_critic: Critic | None = None
-    self.target_critic_kp: Critic | None = None
+    self._target_pairs: tuple[tuple[Critic, Critic], ...] = ()
     if cfg.target_critic_alpha is not None:
       self.target_critic = copy.deepcopy(self.critic).requires_grad_(False)
-      if self.critic_kp is not None:
-        self.target_critic_kp = copy.deepcopy(self.critic_kp).requires_grad_(False)
-    self._target_pairs: tuple[tuple[Critic, Critic], ...] = tuple(
-      (target, online)
-      for target, online in (
-        (self.target_critic, self.critic),
-        (self.target_critic_kp, self.critic_kp),
-      )
-      if target is not None
-    )
-    self._shared += tuple(
-      target
-      for target, online in self._target_pairs
-      if any(online is m for m in self._shared)
-    )
+      self._target_pairs = ((self.target_critic, self.critic),)
+      if any(self.critic is m for m in self._shared):
+        self._shared += (self.target_critic,)
 
     self.replay = ReplayBuffer(
       ReplayCfg(num_envs=cfg.num_envs, capacity=cfg.replay_capacity, device=device)
@@ -1088,12 +1456,19 @@ class Trainer:
     self.kp_env: Tensor | None = None
     self.kp_point_mask: Tensor | None = None
     self.kp_frame_mask: Tensor | None = None
+    self.kp_heading_mask: Tensor | None = None
+    self.kp_drift: Tensor | None = None
+    self.kp_drift_step: Tensor | None = None
     if cfg.kp_interface:
       # Full masks until the collector's first reset draws every env's.
       n = cfg.num_envs
-      self.kp_env = torch.arange(n, device=device) < round(cfg.kp_env_frac * n)
-      self.kp_point_mask = torch.ones(n, NUM_KP, dtype=torch.bool, device=device)
+      frac = 1.0 if cfg.policy_goal == "human" else cfg.kp_env_frac
+      self.kp_env = torch.arange(n, device=device) < round(frac * n)
+      self.kp_point_mask = torch.ones(n, NUM_HUMAN, dtype=torch.bool, device=device)
       self.kp_frame_mask = torch.ones(n, GOAL_K, dtype=torch.bool, device=device)
+      self.kp_heading_mask = torch.ones(n, dtype=torch.bool, device=device)
+      self.kp_drift = sample_human_drift(n, device)
+      self.kp_drift_step = torch.zeros(n, device=device)
     self.collector = Collector(
       self.env,
       self.replay,
@@ -1101,6 +1476,8 @@ class Trainer:
       cfg.action_noise,
       cfg.hist_len,
       on_reset=self._on_reset if cfg.kp_interface else None,
+      det_frac=cfg.collect_det_frac,
+      clean_action_record=cfg.clean_action_record,
     )
     # Imagination starts whose horizon + goal lookahead stays inside the clip.
     min_left = cfg.horizon + GOAL_K
@@ -1112,23 +1489,9 @@ class Trainer:
     self.imag_cfg = ImaginationCfg(
       horizon=cfg.horizon, gamma=cfg.gamma, lam=cfg.lam,
       clip_end_terminal=cfg.clip_end_terminal, target_max=_target_max(cfg),
+      goal_anchor=cfg.goal_anchor,
     )
     self._noise_half = noise_half_widths(self.imag_cfg.obs_noise, torch.device(device))
-    self.steps = LearnedSteps(
-      self.wm,
-      self.policy,
-      self.critic,
-      self.library,
-      self.imag_cfg,
-      self.obs_norm,
-      self.goal_norm,
-      cfg.compile,
-      critic_kp=self.critic_kp,
-      kp_norm=self.kp_norm,
-      kp_align_weight=cfg.kp_align_weight,
-      target_critic=self.target_critic,
-      target_critic_kp=self.target_critic_kp,
-    )
     self._fused_adam = cfg.fused_adam and torch.device(device).type == "cuda"
     adam = functools.partial(torch.optim.Adam, fused=self._fused_adam)
     scale = 1.0
@@ -1136,28 +1499,40 @@ class Trainer:
       scale = math.sqrt(self.world_size)
     self.lr_scale = scale
     self.wm_opt = adam(self.wm.parameters(), lr=cfg.wm_lr * scale)
-    # Only the motion encoder and the decoder, in the order of a keypoint-free
-    # policy's `parameters()` (older checkpoints' Adam states load unchanged).
-    self.policy_opt = adam(
-      self.policy.motion_parameters(), lr=cfg.policy_lr * scale, betas=POLICY_BETAS
-    )
+    # Only the motion encoder and the decoder, in the order of a human-free policy's
+    # `parameters()` (older checkpoints' Adam states load unchanged). None under
+    # `policy_goal="human"`: the motion encoder is not trained and the decoder is in
+    # `kp_opt`.
+    self.policy_opt: torch.optim.Optimizer | None = None
+    if cfg.policy_goal == "motion":
+      self.policy_opt = adam(
+        self.policy.motion_parameters(), lr=cfg.policy_lr * scale, betas=POLICY_BETAS
+      )
     self.critic_opt = adam(self.critic.parameters(), lr=cfg.critic_lr * scale)
     self._base_lr = [
-      (self.wm_opt, cfg.wm_lr * scale),
-      (self.policy_opt, cfg.policy_lr * scale),
-      (self.critic_opt, cfg.critic_lr * scale),
+      (opt, lr)
+      for opt, lr in (
+        (self.wm_opt, cfg.wm_lr * scale),
+        (self.policy_opt, cfg.policy_lr * scale),
+        (self.critic_opt, cfg.critic_lr * scale),
+      )
+      if opt is not None
     ]
     self.kp_opt: torch.optim.Optimizer | None = None
-    self.critic_kp_opt: torch.optim.Optimizer | None = None
-    if self.critic_kp is not None:
+    if cfg.kp_interface:
       self.kp_opt = adam(
-        self.policy.kp_parameters(), lr=cfg.policy_lr * scale, betas=POLICY_BETAS
+        self._kp_parameters(), lr=cfg.policy_lr * scale, betas=POLICY_BETAS
       )
-      self.critic_kp_opt = adam(self.critic_kp.parameters(), lr=cfg.critic_lr * scale)
-      self._base_lr += [
-        (self.kp_opt, cfg.policy_lr * scale),
-        (self.critic_kp_opt, cfg.critic_lr * scale),
-      ]
+      self._base_lr.append((self.kp_opt, cfg.policy_lr * scale))
+    self.critic_kp: Critic | None = None
+    self.target_critic_kp: Critic | None = None
+    self.critic_kp_opt: torch.optim.Optimizer | None = None
+    self.kp_loss_scales: TermScales | None = None
+    if cfg.kp_interface and cfg.kp_loss_norm:
+      names = DIRECT_LOSS_TERMS if cfg.policy_goal == "human" else KP_LOSS_TERMS
+      self.kp_loss_scales = TermScales(names).to(device)
+    self.steps: LearnedSteps
+    self._bind_kp_student()
 
     self.it = 0
     self._collect_acc = 0.0
@@ -1179,7 +1554,34 @@ class Trainer:
   def _resolve_cfg(self, cfg: TrainCfg) -> TrainCfg:
     """`cfg` checked, with this rank's robot and subset yaml in multi-robot mode and
     `morphology`, `decoder_film`, `latent_align_weight` resolved (see `TrainCfg`).
-    Raises ValueError for an inconsistent multi-robot or morphology setting."""
+    Raises ValueError for an inconsistent multi-robot or morphology setting, or for
+    `goal_anchor="robot"` with the human interface (its goals are position-free).
+    `policy_goal="human"` turns `kp_interface` on, leaves the latent alignment off (0;
+    a positive weight raises) and warns once (rank 0) for each flag of
+    `DIRECT_IGNORED_FIELDS` set away from its default."""
+    if cfg.goal_anchor not in GOAL_ANCHORS:
+      raise ValueError(
+        f"goal_anchor must be 'reference' or 'robot', got {cfg.goal_anchor!r}"
+      )
+    if cfg.policy_goal not in ("motion", "human"):
+      raise ValueError(
+        f"policy_goal must be 'motion' or 'human', got {cfg.policy_goal!r}"
+      )
+    human_policy = cfg.policy_goal == "human"
+    if human_policy:
+      cfg = replace(cfg, kp_interface=True)
+      ignored = [k for k, v in DIRECT_IGNORED_FIELDS.items() if getattr(cfg, k) != v]
+      if ignored and self.rank == 0:
+        warnings.warn(
+          f"--policy-goal human ignores {', '.join(ignored)} (no teacher, no student)",
+          stacklevel=3,
+        )
+    if cfg.goal_anchor == "robot" and cfg.kp_interface:
+      raise ValueError(
+        "--kp-interface needs --goal-anchor reference: human goals are position-free"
+      )
+    if not 0.0 <= cfg.kp_heading_frac <= 1.0:
+      raise ValueError(f"kp_heading_frac must be in [0, 1], got {cfg.kp_heading_frac}")
     multi = cfg.robots is not None
     if multi:
       robots = tuple(cfg.robots)
@@ -1218,7 +1620,12 @@ class Trainer:
       )
     weight = cfg.latent_align_weight
     if weight is None:
-      weight = MULTI_ROBOT_LATENT_ALIGN_WEIGHT if multi else 0.0
+      weight = MULTI_ROBOT_LATENT_ALIGN_WEIGHT if multi and not human_policy else 0.0
+    if weight > 0 and human_policy:
+      raise ValueError(
+        "latent alignment acts on the motion encoder, which --policy-goal human does"
+        f" not train; got latent_align_weight={weight}"
+      )
     if weight < 0:
       raise ValueError(f"latent_align_weight must be >= 0, got {weight}")
     if weight > 0 and not multi:
@@ -1249,49 +1656,143 @@ class Trainer:
     return mean.float(), std.float().clamp(min=HEIGHT_STD_FLOOR)
 
   def _kp_modules(self) -> tuple[nn.Module, ...]:
-    """The keypoint interface's own modules besides the policy (`critic_kp`,
-    `kp_norm`); none without it."""
-    if self.critic_kp is None or self.kp_norm is None:
-      return ()
-    return self.critic_kp, self.kp_norm
+    """The human interface's own modules besides the policy and `critic_kp`
+    (`human_norm`, `heading_norm`); none without it."""
+    return () if self.human_norm is None else (self.human_norm, self.heading_norm)
+
+  def _kp_parameters(self) -> list[nn.Parameter]:
+    """Parameters the human step trains (`kp_opt`): the human encoder's (and the
+    reconstruction head's, `human_parameters`), under `policy_goal="human"` then the
+    decoder's."""
+    params = list(self.policy.human_parameters())
+    if self.cfg.policy_goal == "human":
+      params += list(self.policy.decoder.parameters())
+    return params
+
+  def _bind_kp_student(self) -> None:
+    """Builds the parts that depend on `cfg.kp_student` and binds `steps` to them.
+    With the human interface's return student: a fresh `critic_kp` (the critic's
+    widths and morphology vector; shared, and broadcast from rank 0, whenever the
+    critic is), its target copy (`target_critic_alpha`) and its Adam. Otherwise none
+    of them; parts built before are dropped (a resume that keeps the checkpoint's
+    student, `_keep_cfg`). Under `policy_goal="human"` never: `steps` gets the
+    "direct" student, whose rollouts the motion critic values."""
+    cfg = self.cfg
+    old = {id(m) for m in (self.critic_kp, self.target_critic_kp) if m is not None}
+    self._shared = tuple(m for m in self._shared if id(m) not in old)
+    self._target_pairs = tuple(p for p in self._target_pairs if id(p[1]) not in old)
+    self._base_lr = [(o, lr) for o, lr in self._base_lr if o is not self.critic_kp_opt]
+    self.critic_kp = self.target_critic_kp = self.critic_kp_opt = None
+    human_policy = cfg.policy_goal == "human"
+    if cfg.kp_interface and cfg.kp_student == "return" and not human_policy:
+      critic_kp = Critic(self._critic_cfg).to(self.device)
+      if cfg.morphology:
+        critic_kp.set_morphology(self.critic.morph)
+      shared = any(self.critic is m for m in self._shared)
+      if shared and self.world_size > 1:
+        if self.multi:
+          broadcast_params_(critic_kp)
+        else:
+          broadcast_(critic_kp)
+      self.critic_kp = critic_kp
+      if shared:
+        self._shared += (critic_kp,)
+      if cfg.target_critic_alpha is not None:
+        self.target_critic_kp = copy.deepcopy(critic_kp).requires_grad_(False)
+        self._target_pairs += ((self.target_critic_kp, critic_kp),)
+        if shared:
+          self._shared += (self.target_critic_kp,)
+      lr = cfg.critic_lr * self.lr_scale
+      self.critic_kp_opt = torch.optim.Adam(
+        critic_kp.parameters(), lr=lr, fused=self._fused_adam
+      )
+      self._base_lr.append((self.critic_kp_opt, lr))
+    self.steps = LearnedSteps(
+      self.wm,
+      self.policy,
+      self.critic,
+      self.library,
+      self.imag_cfg,
+      self.obs_norm,
+      self.goal_norm,
+      cfg.compile,
+      human_norm=self.human_norm,
+      heading_norm=self.heading_norm,
+      kp_student="direct" if human_policy else cfg.kp_student,
+      critic_kp=self.critic_kp,
+      kp_align_weight=cfg.kp_align_weight,
+      kp_action_weight=cfg.kp_action_weight,
+      kp_loss_scales=self.kp_loss_scales,
+      recon_weight=cfg.recon_weight,
+      target_critic=self.target_critic,
+      target_critic_kp=self.target_critic_kp,
+    )
 
   # Collection.
 
   def _policy_fn(self, obs_hist_flat: Tensor, goals: dict[str, Tensor]) -> Tensor:
     """Collector policy: folds the newest noisy obs frame, the motion goal
-    (`goals["goal"]`) and, with the keypoint interface, the keypoint features
-    (`goals["goal_kp"]`) of all envs into the running normalisers (training mode only),
-    then acts on the motion goal. With the keypoint interface the `kp_env` envs act
-    instead on their keypoint features through their episode masks (`act_kp`)."""
+    (`goals["goal"]`) and, with the human interface, the human features and the
+    heading block (unmasked, every row) of the raw human goal (`goals["goal_kp"]`,
+    under each env's slot mask) of all envs into the running normalisers (training
+    mode only), then acts on the motion goal. With the human interface the `kp_env`
+    envs act instead on their human goal through their episode masks (`act_human`,
+    which masks after the normalisation); under `policy_goal="human"` every env does
+    and the motion goal is not acted on (`goal_norm` still learns it: the critic and
+    the reconstruction target read it)."""
     goal = goals["goal"]
     frames = obs_hist_flat.view(obs_hist_flat.shape[0], -1, PROPRIO_DIM)
     self.obs_norm.update(frames[:, -1])
     self.goal_norm.update(goal)
-    action = act(self.policy, self.obs_norm, self.goal_norm, obs_hist_flat, goal)
+    human_policy = self.cfg.policy_goal == "human"
+    action = (
+      None
+      if human_policy
+      else act(self.policy, self.obs_norm, self.goal_norm, obs_hist_flat, goal)
+    )
     if not self.cfg.kp_interface:
       return action
-    self.kp_norm.update(goals["goal_kp"])
-    action_kp = act_kp(
+    feats = human_features_from_goal(goals["goal_kp"], self.kp_point_mask)
+    self.human_norm.update(feats)
+    self.heading_norm.update(heading_from_goal(goals["goal_kp"], self.kp_point_mask))
+    human_goal = goals["goal_kp"]
+    if self.cfg.kp_drift:  # the normalisers above keep the clean goal
+      frames = self.kp_drift_step[:, None] + torch.arange(GOAL_K, device=self.device)
+      human_goal = drift_human_goal(human_goal, self.kp_drift, frames * DT)
+      self.kp_drift_step += 1
+    action_h = act_human(
       self.policy,
       self.obs_norm,
-      self.kp_norm,
+      self.human_norm,
+      self.heading_norm,
       obs_hist_flat,
-      goals["goal_kp"],
+      human_goal,
       self.kp_point_mask,
       self.kp_frame_mask,
+      self.kp_heading_mask,
     )
-    return torch.where(self.kp_env[:, None], action_kp, action)
+    if human_policy:
+      return action_h
+    return torch.where(self.kp_env[:, None], action_h, action)
 
   def _on_reset(self, env_ids: Tensor) -> None:
-    """Collector hook: draws new episode masks (`sample_kp_masks`, `cfg.kp_masking`)
-    for the envs that just reset; nothing without the keypoint interface."""
+    """Collector hook: draws new episode masks (`sample_human_masks`,
+    `cfg.kp_masking`, `cfg.kp_heading_frac`) for the envs that just reset; nothing
+    without the human interface."""
     if not self.cfg.kp_interface:
       return
-    point_mask, frame_mask = sample_kp_masks(
-      len(env_ids), self.cfg.kp_masking, torch.device(self.device)
+    point_mask, frame_mask, heading_mask = sample_human_masks(
+      len(env_ids),
+      self.cfg.kp_masking,
+      torch.device(self.device),
+      heading_frac=self.cfg.kp_heading_frac,
+      preview_mix=self.cfg.kp_preview_mix,
     )
     self.kp_point_mask[env_ids] = point_mask
     self.kp_frame_mask[env_ids] = frame_mask
+    self.kp_heading_mask[env_ids] = heading_mask
+    self.kp_drift[env_ids] = sample_human_drift(len(env_ids), self.kp_drift.device)
+    self.kp_drift_step[env_ids] = 0
 
   def _collect_steps(self) -> int:
     """Env steps of this iteration: 1/utd accumulated, whole steps taken (2.5 -> 2,
@@ -1358,15 +1859,17 @@ class Trainer:
     """Cross-robot latent alignment term of the policy loss (collective):
     the `latent_align_batch` reference frames of this iteration's common-clip draw
     (the same (clip, frame) pairs on every rank), their goal features with the robot
-    exactly on the reference, `goal_features(state(f), future(f, K))`, normalised and
-    encoded by this rank's motion encoder, then `latent_alignment_loss`. Returns
-    (`latent_align_weight` x loss, metrics `policy/latent_align_loss` (unweighted) and
-    `policy/latent_dist`, the mean cross-robot latent distance)."""
+    exactly on the reference, `goal_features(state(f), future(f, K), goal_anchor)`,
+    normalised and encoded by this rank's motion encoder, then `latent_alignment_loss`.
+    Returns (`latent_align_weight` x loss, metrics `policy/latent_align_loss`
+    (unweighted) and `policy/latent_dist`, the mean cross-robot latent distance)."""
     assert self._align_sampler is not None
     frames = self._align_sampler.frames(self.it, self.cfg.latent_align_batch)
     with torch.no_grad():
       goal = goal_features(
-        self.library.state(frames), self.library.future(frames, GOAL_K)
+        self.library.state(frames),
+        self.library.future(frames, GOAL_K),
+        self.cfg.goal_anchor,
       )
       goal = self.goal_norm(goal)
     loss, distance = latent_alignment_loss(self.policy.encode(goal))
@@ -1420,44 +1923,88 @@ class Trainer:
     return ro, info | aux_info
 
   def improve_policy_kp(self) -> tuple[ImaginedRollout, dict[str, Tensor]]:
-    """One BPTT step of the keypoint encoder on `kp_imag_batch` imagined rollouts:
-    fresh starts and sensor noise, `sample_kp_masks` masks per
-    rollout, the target jitter window (zeros without `kp_jitter`), the loss -J +
-    `kp_align_weight` x alignment with the world model, `critic_kp`, decoder and motion
-    encoder frozen, the policy's clipping. Returns the rollout (for the `critic_kp`
-    fit) and device-side metrics: `kp/objective` (J without the alignment term),
-    `kp/align_err` (the latent error's mean over the rewarded steps), `kp/grad_norm`,
-    `kp/nonfinite_steps`, `imag_kp/*`."""
+    """One step of the human interface on `kp_imag_batch` imagined rollouts: fresh
+    starts and sensor noise, `sample_human_masks` masks per rollout (the heading on in
+    a `kp_heading_frac` share), the target jitter window (zeros without `kp_jitter`),
+    the human poses of the rollout's frames (drifted under `kp_drift`), the `kp_student`'s loss
+    (`LearnedSteps.policy_loss_kp`) with the world model, decoder, motion encoder and
+    `critic_kp` (return student) frozen, the policy's clipping.
+    The loss scales (`kp_loss_scales`) take this step's terms after the backward pass.
+    Returns the rollout (for the `critic_kp` fit) and device-side metrics:
+    `kp/action_err` and `kp/align_err` (the raw means of the teacher action gap and
+    the latent error over the rewarded steps), `kp/return` (J; NaN under copy),
+    `kp/loss`, `kp/scale_return`, `kp/scale_copy`, `kp/scale_align` (the scales after
+    the update; NaN for a term the student lacks or without `kp_loss_norm`),
+    `kp/grad_norm`, `kp/nonfinite_steps` and `imag_kp/*`.
+
+    Under `policy_goal="human"` this is the policy step: the "direct" student's loss
+    (-J with the motion critic, plus `recon_weight` x the reconstruction term) trains
+    the human encoder, the reconstruction head and the decoder (`_kp_parameters`) with
+    the world model, the motion encoder and the critic frozen; `kp/recon` (the raw
+    reconstruction term) replaces `kp/action_err` and `kp/align_err`, and the scales
+    are `kp/scale_return`, `kp/scale_recon`."""
     cfg = self.cfg
     start = self.replay.sample_starts(
       cfg.kp_imag_batch, cfg.hist_len, accept_frame=self._start_filter
     )
     noise = imagination_noise(start, self.imag_cfg, self._noise_half)
     device = start.state.device
-    point_mask, frame_mask = sample_kp_masks(cfg.kp_imag_batch, cfg.kp_masking, device)
+    point_mask, frame_mask, heading_mask = sample_human_masks(
+      cfg.kp_imag_batch,
+      cfg.kp_masking,
+      device,
+      heading_frac=cfg.kp_heading_frac,
+      preview_mix=cfg.kp_preview_mix,
+    )
+    window = self.imag_cfg.horizon + GOAL_K
     if cfg.kp_jitter:
-      jitter = kp_jitter_window(start, self.imag_cfg)
+      jitter = human_jitter_window(start, self.imag_cfg)
     else:
-      shape = (cfg.kp_imag_batch, self.imag_cfg.horizon + GOAL_K, NUM_KP, 6)
-      jitter = torch.zeros(shape, device=device)
+      jitter = torch.zeros(cfg.kp_imag_batch, window, NUM_HUMAN, 6, device=device)
+    human_win = human_window(self.library, start.frame, window)
+    if cfg.kp_drift:
+      pos, quat = drift_human_poses(
+        human_win[..., :3],
+        human_win[..., 3:],
+        sample_human_drift(cfg.kp_imag_batch, device),
+        torch.arange(window, device=device)[None] * DT,
+      )
+      human_win = torch.cat([pos, quat], dim=-1)
     self.kp_opt.zero_grad(set_to_none=True)
     policy = self.policy
-    with frozen(self.wm, self.critic_kp, policy.decoder, policy.encoder):
-      loss, ro = self.steps.policy_loss_kp(start, noise, point_mask, frame_mask, jitter)
+    human_policy = cfg.policy_goal == "human"
+    if human_policy:  # the decoder trains; the motion critic values the rollout
+      nets = (self.wm, policy.encoder, self.critic)
+    else:  # the decoder too: the student's action would otherwise train it
+      critics = () if self.critic_kp is None else (self.critic_kp,)
+      nets = (self.wm, policy.decoder, policy.encoder, *critics)
+    with frozen(*nets):
+      loss, ro, terms = self.steps.policy_loss_kp(
+        start, noise, point_mask, frame_mask, heading_mask, jitter, human_win
+      )
     loss.backward()
-    self._average_grads(policy, policy.kp_parameters())
-    grad_norm, nonfinite = clip_grads_(
-      policy.kp_parameters(), MAX_GRAD_NORM, POLICY_GRAD_CLIP
-    )
+    if self.kp_loss_scales is not None:
+      self.kp_loss_scales.update(terms)
+    params = self._kp_parameters()
+    self._average_grads(policy, params)
+    grad_norm, nonfinite = clip_grads_(params, MAX_GRAD_NORM, POLICY_GRAD_CLIP)
     self.kp_opt.step()
     with torch.no_grad():
-      rewarded = ro.trunc_mask
-      num_rewarded = rewarded.sum().clamp(min=1)
-      align = torch.where(rewarded, ro.latent_err, 0.0).sum() / num_rewarded
-      mask = rewarded.float()
+      nan = torch.full((), math.nan, device=device)
+      scales = {} if self.kp_loss_scales is None else self.kp_loss_scales.scales()
+      mask = ro.trunc_mask.float()
+      if human_policy:
+        errors = {"kp/recon": terms["recon"]}
+      else:
+        errors = {"kp/action_err": terms["copy"], "kp/align_err": terms["align"]}
       info = {
-        "kp/objective": -loss.detach() + cfg.kp_align_weight * align,
-        "kp/align_err": align,
+        **errors,
+        "kp/return": -terms["return"] if "return" in terms else nan,
+        "kp/loss": loss.detach(),
+        **{
+          f"kp/scale_{name}": scales[name] if name in terms and scales else nan
+          for name in (DIRECT_LOSS_TERMS if human_policy else KP_LOSS_TERMS)
+        },
         "kp/grad_norm": grad_norm,
         "kp/nonfinite_steps": nonfinite,
         "imag_kp/survival_H": ro.survival[:, -1].mean(),
@@ -1501,10 +2048,12 @@ class Trainer:
 
   def iteration(self) -> dict[str, Any]:
     """One iteration of Algorithm A.1: (a) collect, (b) fit the world model, (c) one
-    policy step, (d) fit the critic; with the keypoint interface then (e) one keypoint
-    step and (f) the `critic_kp` fit (same `actor_critic` phase); with
-    `target_critic_alpha` then (g) the target critics' Polyak steps. (c)-(g) are
-    skipped during the first `wm_only_iters` iterations. LRs follow the cosine schedule (step =
+    policy step, (d) fit the critic; with the human interface then (e) one human step
+    and (f, return student) the `critic_kp` fit (same `actor_critic` phase); with
+    `target_critic_alpha` then (g) the target critics' Polyak steps. Under
+    `policy_goal="human"` (c)-(f) are one human step (the policy step) and the critic
+    fit on its rollouts. (c)-(g) are skipped during the first `wm_only_iters`
+    iterations. LRs follow the cosine schedule (step =
     `it`). Returns this iteration's metrics (floats, or 0-dim device tensors), the
     collector stats (`_collect`) and the phase timer (`_phases`). No explicit
     synchronize."""
@@ -1524,7 +2073,20 @@ class Trainer:
     phases.mark()
     metrics: dict[str, Any] = self.fit_world_model()
     phases.mark()
-    if self.it >= cfg.wm_only_iters:  # after the world-model-only warm-up
+    if self.it >= cfg.wm_only_iters and cfg.policy_goal == "human":
+      # The human step is the policy step; the critic is fit on its rollouts.
+      ro, kp_info = self.improve_policy_kp()
+      metrics |= kp_info
+      metrics |= self._fit_critic(
+        "critic",
+        self.critic,
+        self.critic_opt,
+        ro,
+        self.steps.critic_targets,
+        self.steps.critic_loss,
+      )
+      self._update_target()
+    elif self.it >= cfg.wm_only_iters:  # after the world-model-only warm-up
       aux = self.latent_alignment if self._align_sampler is not None else None
       ro, policy_info = self.improve_policy(aux)
       metrics |= policy_info
@@ -1536,17 +2098,18 @@ class Trainer:
         self.steps.critic_targets,
         self.steps.critic_loss,
       )
-      if self.critic_kp is not None:
+      if cfg.kp_interface:
         ro_kp, kp_info = self.improve_policy_kp()
         metrics |= kp_info
-        metrics |= self._fit_critic(
-          "critic_kp",
-          self.critic_kp,
-          self.critic_kp_opt,
-          ro_kp,
-          self.steps.critic_targets_kp,
-          self.steps.critic_loss_kp,
-        )
+        if self.critic_kp is not None:  # the return student
+          metrics |= self._fit_critic(
+            "critic_kp",
+            self.critic_kp,
+            self.critic_kp_opt,
+            ro_kp,
+            self.steps.critic_targets_kp,
+            self.steps.critic_loss_kp,
+          )
       self._update_target()
     phases.mark()
 
@@ -1669,6 +2232,8 @@ class Trainer:
     if "policy/grad_norm" in metrics:  # absent during the world-model-only warm-up
       window.policy_iterations += 1
       window.max("policy/grad_norm_max", metrics["policy/grad_norm"])
+    elif self.cfg.policy_goal == "human" and "kp/grad_norm" in metrics:
+      window.policy_iterations += 1  # the human step is the policy step
     if self.cfg.kp_interface:
       window.mean("collect/kp_env_frac", self.kp_env.float().mean())
     if collect is None:
@@ -1742,8 +2307,11 @@ class Trainer:
     out["perf/iter_time"] = wall / iters
     out["perf/it_per_s"] = iters / wall
     out["perf/env_steps_per_s"] = out.get("collect/env_steps", 0.0) / wall
-    batch = self.cfg.imag_batch + (
-      self.cfg.kp_imag_batch if self.cfg.kp_interface else 0
+    cfg = self.cfg
+    batch = (
+      cfg.kp_imag_batch  # the human step only
+      if cfg.policy_goal == "human"
+      else cfg.imag_batch + (cfg.kp_imag_batch if cfg.kp_interface else 0)
     )
     imag_steps = window.policy_iterations * batch * self.cfg.horizon * ranks
     out["perf/imag_steps_per_s"] = imag_steps / wall
@@ -1783,9 +2351,17 @@ class Trainer:
 
   def _print_line(self, out: dict[str, float]) -> None:
     kp = ""
-    if self.cfg.kp_interface:
+    if self.cfg.policy_goal == "human":
       kp = (
-        f" | kp J {out.get('kp/objective', math.nan):.4f}"
+        f" | kp J {out.get('kp/return', math.nan):.4f}"
+        f" recon {out.get('kp/recon', math.nan):.4f}"
+        f" |g| {out.get('kp/grad_norm', math.nan):.3f}"
+        f" surv {out.get('imag_kp/survival_H', math.nan):.3f}"
+      )
+    elif self.cfg.kp_interface:
+      kp = (
+        f" | kp J {out.get('kp/return', math.nan):.4f}"
+        f" act {out.get('kp/action_err', math.nan):.4f}"
         f" align {out.get('kp/align_err', math.nan):.4f}"
         f"{_tclip(out, 'critic_kp/target_clipped')}"
       )
@@ -1856,10 +2432,13 @@ class Trainer:
     (`rng_state`; data parallel: every rank's in `rng_ranks`, index = rank), the cfg
     and the iteration; with the morphology input also `morph`: the world-model (and
     critic) vector `wm`, the actor's `actor` and whether the decoder has `film`, as
-    `load_policy` rebuilds the policy from them; with the keypoint interface also
-    `critic_kp`, `kp_norm` and the `kp` / `critic_kp` optimiser states (the keypoint
-    encoder is in `policy`); with `target_critic_alpha` the target critics
-    (`target_critic`, `target_critic_kp`). Not saved: the replay (a resumed run warms it up again),
+    `load_policy` rebuilds the policy from them; with the human interface also
+    `human_norm`, `heading_norm`, the `kp` optimiser state (the human encoder is in
+    `policy`), with `kp_loss_norm` the loss scales `kp_loss_scales` and, under the
+    return student, `critic_kp` and its `critic_kp` optimiser state; with
+    `target_critic_alpha` the target critics (`target_critic`, `target_critic_kp`).
+    `kp_goal_version` is always `KP_GOAL_VERSION`. Not saved: the replay (a resumed
+    run warms it up again),
     the running episodes' accumulators and the env's physics state (a resume starts
     new episodes)."""
     ckpt = {
@@ -1875,7 +2454,11 @@ class Trainer:
       "goal_norm": self.goal_norm.state_dict(),
       "optim": {
         "wm": self.wm_opt.state_dict(),
-        "policy": self.policy_opt.state_dict(),
+        **(
+          {"policy": self.policy_opt.state_dict()}
+          if self.policy_opt is not None
+          else {}
+        ),
         "critic": self.critic_opt.state_dict(),
       },
       "schedule": {
@@ -1894,12 +2477,16 @@ class Trainer:
       "imu_body": self.command.spec.imu_body,
       "kp_goal_version": KP_GOAL_VERSION,
     }
+    if self.human_norm is not None:
+      ckpt["human_norm"] = self.human_norm.state_dict()
+      ckpt["heading_norm"] = self.heading_norm.state_dict()
+      ckpt["optim"]["kp"] = self.kp_opt.state_dict()
+    if self.kp_loss_scales is not None:
+      ckpt["kp_loss_scales"] = self.kp_loss_scales.state_dict()
     if self.critic_kp is not None:
       ckpt["critic_kp"] = self.critic_kp.state_dict()
       if self.target_critic_kp is not None:
         ckpt["target_critic_kp"] = self.target_critic_kp.state_dict()
-      ckpt["kp_norm"] = self.kp_norm.state_dict()
-      ckpt["optim"]["kp"] = self.kp_opt.state_dict()
       ckpt["optim"]["critic_kp"] = self.critic_kp_opt.state_dict()
     if rng_ranks is not None:
       ckpt["rng_ranks"] = rng_ranks
@@ -1938,13 +2525,15 @@ class Trainer:
     return path
 
   def _check_ranks_identical(self) -> bool:
-    """Data parallel (collective): compares every rank's policy (with the keypoint
-    encoder), world-model, critic, `critic_kp` (keypoint interface) and target critic
+    """Data parallel (collective): compares every rank's policy (with the human
+    encoder), world-model, critic, `critic_kp` (return student) and target critic
     (`target_critic_alpha`) parameters and buffers (the world model's normaliser and residual scale among them) by a float64
     checksum each (`param_checksums`); rank 0 prints a warning when the checksums of a
     network differ over the ranks by more than `RANK_CHECKSUM_RTOL` (relative).
     Multi-robot mode: the shared modules only, by their parameters (the buffers are
-    each robot's own). Returns whether all agree."""
+    each robot's own), plus the pooled normalisers by their statistics: `human_norm`
+    and `heading_norm` always (pooled whenever world_size > 1), the observation and
+    goal ones with `pool_norms`. Returns whether all agree."""
     named = {
       "policy": self.policy,
       "wm": self.wm,
@@ -1960,6 +2549,17 @@ class Trainer:
     ]
     names = tuple(n for n, _ in shared)
     hi, lo = param_checksums(*(m for _, m in shared), buffers=not self.multi)
+    norms = {}
+    if self.multi:
+      if self.cfg.pool_norms:
+        norms = {"obs_norm": self.obs_norm, "goal_norm": self.goal_norm}
+      norms["human_norm"] = self.human_norm
+      norms["heading_norm"] = self.heading_norm
+      norms = {n: m for n, m in norms.items() if m is not None}
+    if norms:
+      norm_hi, norm_lo = param_checksums(*norms.values())
+      names += tuple(norms)
+      hi, lo = torch.cat([hi, norm_hi]), torch.cat([lo, norm_lo])
     scale = torch.maximum(hi.abs(), lo.abs())
     diverged = ((hi - lo).abs() > RANK_CHECKSUM_RTOL * scale).tolist()
     if any(diverged) and self.is_main:
@@ -1982,15 +2582,18 @@ class Trainer:
     schedule, the reset sampler and the RNG states; training then continues from its
     iteration. Returns the names of the restored parts. Raises ValueError, before
     restoring anything, when the checkpoint's goal inputs are another version
-    (`GOAL_VERSION`; a checkpoint without `goal_version` is version 1), when a flag of `LEGACY_CFG_DEFAULTS` differs from this
+    (`GOAL_VERSION`; a checkpoint without `goal_version` is version 1) or was trained
+    with another `goal_anchor` (`check_goal_anchor`), when a flag of `LEGACY_CFG_DEFAULTS` differs from this
     trainer's (a cfg without the field has the legacy value), naming the flags that
     load the checkpoint, or when the checkpoint was trained for another robot or robot
     set (`_resume_guard`: `robot`, `robots`, `morphology`; in multi-robot mode also
-    `share`; with the morphology input also `actor_geometry`, `decoder_film`). Takes
+    `share`; with the morphology input also `actor_geometry`, `decoder_film`), or with
+    another `policy_goal` (a cfg without one: "motion"). Takes
     the `RESUME_KEPT_FIELDS` (`critic_target_clip`) from the checkpoint's cfg, a cfg
     without one as its `ADDED_CFG_DEFAULTS` value (a checkpoint from before the clamp
     resumes with it off), unless `explicit` (the fields the command line names) holds
-    it, and prints a note for each one it changes. Warns
+    it, and prints a note for each one it changes (`pool_norms` in multi-robot mode
+    only; a change the command line names warns, `_flip_pool_norms`). Warns
     when the checkpoint's cfg otherwise differs from this trainer's outside
     `RESUME_FREE_FIELDS` (another field the saved cfg lacks compares as its default, so
     checkpoints from before a field existed resume silently while it keeps its
@@ -2001,10 +2604,22 @@ class Trainer:
     and restores the same sampler (rank 0's) and its own RNG states. Multi-robot mode:
     every rank loads its own robot's checkpoint (its sampler and RNG state).
 
-    Keypoint interface: a checkpoint with the keypoint encoder restores it with
-    `critic_kp`, `kp_norm` and their optimisers ("keypoint"); one without it (a
+    Human interface: a checkpoint with the human encoder restores it with
+    `human_norm`, `heading_norm`, its optimiser, the loss scales (`kp_loss_scales`;
+    a checkpoint without them leaves this run's fresh, with a note) and, under the
+    return student, `critic_kp` and its optimiser ("keypoint"); one without it (a
     motion-only run) leaves those parts fresh, with a warning. A motion-only trainer
-    ignores a checkpoint's keypoint encoder.
+    ignores a checkpoint's human encoder. `kp_student` is a kept field when both the
+    checkpoint and this run train the human interface (else this run's applies): a
+    change rebuilds the student's parts (`_bind_kp_student`) before they are restored;
+    a `critic_kp` the copy student does not use is dropped with a warning. A checkpoint
+    with keypoint parts of an older keypoint goal version (`_stale_kp_parts`: the
+    five-point interface of versions 1-2, or the human interface of versions 3-9: 3
+    with orientations relative to the robot pelvis, 4 in the anchor heading frame
+    without the heading error, 5 with the yaw-only heading error, 6 with the relative
+    orientation block fed raw, 7-9 with the block against the robot pelvis) is refused by a human trainer
+    (ValueError); a motion-only trainer drops those parts with a warning. An older
+    checkpoint without such parts loads as any motion-only one.
 
     Loaded on the CPU first: the modules and optimisers copy the state to their own
     devices. Adam keeps this run's `fused_adam` setting (`_keep_fused`): its `step`
@@ -2019,15 +2634,18 @@ class Trainer:
         " so its policy, critics and goal normalisers do not carry over"
       )
     check_imu_body(ckpt, path)
-    kp_version = int(ckpt.get("kp_goal_version", 1))
-    if self.critic_kp is not None and "critic_kp" in ckpt and kp_version != KP_GOAL_VERSION:
-      raise ValueError(
-        f"checkpoint {path} was trained on five-point goal version {kp_version}; this code"
-        f" builds version {KP_GOAL_VERSION} (orientations relative to the full robot"
-        " pelvis), so its keypoint encoder and normaliser do not"
-        " carry over"
-      )
+    stale = _stale_kp_parts(ckpt)
+    if stale is not None and self.cfg.kp_interface:
+      raise ValueError(_stale_kp_error(path, ckpt, stale, "without --kp-interface"))
+    check_goal_anchor(ckpt["cfg"], self.cfg.goal_anchor, path)
     current, saved = asdict(self.cfg), {**ADDED_CFG_DEFAULTS, **ckpt["cfg"]}
+    if not (saved.get("kp_interface", False) and current["kp_interface"]):
+      # A run without the human interface had no student, and a motion-only run
+      # ignores the checkpoint's: this run's applies (no "keeps kp_student" note).
+      saved["kp_student"] = current["kp_student"]
+    if not self.multi:
+      # A single-robot run has no pooling choice: this run's value applies.
+      saved["pool_norms"] = current["pool_norms"]
     # `LEGACY_CFG_DEFAULTS` flags first: a mismatch is refused before anything is
     # restored.
     flags = {
@@ -2042,6 +2660,14 @@ class Trainer:
         f"checkpoint {path} was trained with {trained}; pass {fix} to load it"
       )
     self._resume_guard(path, saved, current)
+    if saved["policy_goal"] != current["policy_goal"]:
+      raise ValueError(
+        f"checkpoint {path} was trained with policy_goal={saved['policy_goal']!r};"
+        f" this run has policy_goal={current['policy_goal']!r}. The two train"
+        " different encoders with different optimisers: resume with --policy-goal"
+        f" {saved['policy_goal']}"
+      )
+    pool_flip = "pool_norms" in explicit and saved["pool_norms"] != current["pool_norms"]
     kept = {
       key: saved[key]
       for key in RESUME_KEPT_FIELDS
@@ -2074,7 +2700,10 @@ class Trainer:
         f" {self.world_size}",
         stacklevel=2,
       )
-    has_kp = self._load_policy(ckpt["policy"], path)
+    if stale is not None:
+      warnings.warn(_stale_kp_warning(path, ckpt, stale), stacklevel=2)
+      ckpt = _without_stale_kp_parts(ckpt, stale)
+    has_human = self._load_policy(ckpt["policy"], path)
     self.critic.load_state_dict(ckpt["critic"])
     if self.target_critic is not None:
       # A checkpoint trained without a target critic starts it as the critic's copy.
@@ -2087,6 +2716,8 @@ class Trainer:
     self.wm.load_state_dict(wm_state)
     self.obs_norm.load_state_dict(ckpt["obs_norm"])
     self.goal_norm.load_state_dict(ckpt["goal_norm"])
+    if pool_flip:
+      self._flip_pool_norms(path)
     restored = ["networks", "normalisers"]
     if "optim" in ckpt:
       for name, opt in (
@@ -2094,6 +2725,8 @@ class Trainer:
         ("policy", self.policy_opt),
         ("critic", self.critic_opt),
       ):
+        if opt is None:  # policy_goal="human": no motion optimiser
+          continue
         opt.load_state_dict(ckpt["optim"][name])
         _keep_fused(opt, self._fused_adam)
       restored.append("optimisers")
@@ -2109,18 +2742,39 @@ class Trainer:
       restored.append("sampler")
     if self._load_rng(ckpt, path):
       restored.append("rng")
-    if has_kp and self.critic_kp is not None:
-      self.critic_kp.load_state_dict(ckpt["critic_kp"])
-      if self.target_critic_kp is not None:
-        # Trained without a target critic: it starts as `critic_kp`'s copy.
-        self.target_critic_kp.load_state_dict(
-          ckpt.get("target_critic_kp", ckpt["critic_kp"])
+    if self.cfg.kp_interface and self.critic_kp is None and "critic_kp" in ckpt:
+      warnings.warn(
+        f"checkpoint {path}: critic_kp dropped (copy student has no critic)",
+        stacklevel=2,
+      )
+    if has_human and self.human_norm is not None:
+      self.human_norm.load_state_dict(ckpt["human_norm"])
+      self.heading_norm.load_state_dict(ckpt["heading_norm"])
+      opts = [("kp", self.kp_opt)]
+      if self.critic_kp is not None and "critic_kp" in ckpt:
+        self.critic_kp.load_state_dict(ckpt["critic_kp"])
+        if self.target_critic_kp is not None:
+          # Trained without a target critic: it starts as `critic_kp`'s copy.
+          self.target_critic_kp.load_state_dict(
+            ckpt.get("target_critic_kp", ckpt["critic_kp"])
+          )
+        opts.append(("critic_kp", self.critic_kp_opt))
+      elif self.critic_kp is not None:
+        warnings.warn(
+          f"checkpoint {path} has no critic_kp (copy student); critic_kp starts fresh",
+          stacklevel=2,
         )
-      self.kp_norm.load_state_dict(ckpt["kp_norm"])
       if "optim" in ckpt:
-        for name, opt in (("kp", self.kp_opt), ("critic_kp", self.critic_kp_opt)):
+        for name, opt in opts:
           opt.load_state_dict(ckpt["optim"][name])
           _keep_fused(opt, self._fused_adam)
+      if self.kp_loss_scales is not None and "kp_loss_scales" in ckpt:
+        self.kp_loss_scales.load_state_dict(ckpt["kp_loss_scales"])
+      elif self.kp_loss_scales is not None and self.is_main:
+        print(
+          f"[morphmimic] kp loss scales start fresh (checkpoint {path} has none)",
+          flush=True,
+        )
       restored.append("keypoint")
     return restored
 
@@ -2132,6 +2786,15 @@ class Trainer:
     and prints a note on rank 0 naming the flag that overrides each."""
     self.cfg = replace(self.cfg, **kept)
     self.imag_cfg.target_max = _target_max(self.cfg)  # shared with `self.steps`
+    # The recipe switches act in the live command and collector.
+    self.command.cfg.softmax_cap = self.cfg.softmax_cap
+    self.command.cfg.failure_reset = self.cfg.failure_reset
+    self.collector.set_exploration(self.cfg.collect_det_frac, self.cfg.clean_action_record)
+    if "kp_student" in kept and self.cfg.kp_interface:
+      self._bind_kp_student()  # every rank (it may broadcast)
+    if "pool_norms" in kept:
+      sync = self.world_size > 1 and (not self.multi or self.cfg.pool_norms)
+      self.obs_norm.sync = self.goal_norm.sync = sync
     if not self.is_main:
       return
     for key, value in kept.items():
@@ -2151,6 +2814,26 @@ class Trainer:
         f" {key}={value!r} (pass {override} to change it)",
         flush=True,
       )
+
+  def _flip_pool_norms(self, path: str | Path) -> None:
+    """Resume of a multi-robot checkpoint with `pool_norms` named on the command line
+    and changed: warns. Turned on, every rank's (just loaded) observation and goal
+    normalisers become one pooled set of every robot's statistics
+    (`RunningNormalizer.pool_ranks_`, collective), so the ranks start identical."""
+    on = self.cfg.pool_norms
+    if on and self.world_size > 1:
+      self.obs_norm.pool_ranks_()
+      self.goal_norm.pool_ranks_()
+    effect = (
+      "every robot's observation and goal normaliser statistics are merged into one"
+      " pooled set"
+      if on
+      else "each robot's normalisers go on from the pooled statistics with its own"
+      " samples"
+    )
+    warnings.warn(
+      f"checkpoint {path}: pool_norms changed to {on}; {effect}", stacklevel=3
+    )
 
   def _resume_guard(
     self, path: str | Path, saved: dict[str, Any], current: dict[str, Any]
@@ -2178,30 +2861,30 @@ class Trainer:
 
   def _load_policy(self, state: dict[str, Tensor], path: str | Path) -> bool:
     """Loads the policy's state dict, which may differ from this policy's by the
-    keypoint encoder only: a keypoint trainer warns when the checkpoint has none
-    (that part keeps its fresh weights), a motion-only one ignores it. Raises on any
-    other missing or unexpected key. Returns whether the checkpoint has the keypoint
+    human encoder only: a human trainer warns when the checkpoint has none (that part
+    keeps its fresh weights), a motion-only one ignores it. Raises on any other
+    missing or unexpected key. Returns whether the checkpoint has the human
     encoder."""
     result = self.policy.load_state_dict(state, strict=False)
-    prefix = _KP_ENCODER_PREFIX
-    has_kp = any(key.startswith(prefix) for key in state)
+    prefix = _HUMAN_ENCODER_PREFIX
+    has_human = any(key.startswith(prefix) for key in state)
     other = [
       key
       for key in result.missing_keys + result.unexpected_keys
       if not key.startswith(prefix)
     ]
-    partial_kp = has_kp and any(key.startswith(prefix) for key in result.missing_keys)
-    if other or partial_kp:
+    partial = has_human and any(key.startswith(prefix) for key in result.missing_keys)
+    if other or partial:
       raise RuntimeError(
         f"checkpoint {path}: policy state does not match (missing"
         f" {result.missing_keys}, unexpected {result.unexpected_keys})"
       )
-    if self.policy.kp_encoder is not None and not has_kp:
+    if self.policy.human_encoder is not None and not has_human:
       warnings.warn(
-        f"checkpoint {path} has no keypoint encoder; keypoint parts start fresh",
+        f"checkpoint {path} has no human encoder; the human parts start fresh",
         stacklevel=3,
       )
-    return has_kp
+    return has_human
 
   def _load_sampler(self, ckpt: dict[str, Any], path: str | Path) -> bool:
     """Restores the reset sampler's `G_b` and `past_softmax` (single robot: the same,

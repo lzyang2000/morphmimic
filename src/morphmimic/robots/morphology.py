@@ -33,8 +33,11 @@ between body origins in the world frame (as `spec.leg_length`), left side where 
                (left_shoulder_pitch_link on all three)
 
 Every feature (log terms and geometry alike) is min-max scaled to [-1, 1] over the
-robots of `ROBOTS`; a feature equal on all of them maps to 0. Raw descriptors and the
-scaled table are cached per process; importing this module compiles no model.
+training robots `ROBOTS`; a feature equal on all of them maps to 0. A variant
+(`VARIANTS`, no run trains on it) is scaled with the same minima and maxima, so the
+training robots' vectors never move and a variant inside their range lands inside
+[-1, 1]. Raw descriptors and the scaled vectors are cached per process; importing
+this module compiles no model.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from morphmimic.robots import ROBOTS, get_robot
+from morphmimic.robots import ROBOTS, VARIANTS, get_robot
 
 if TYPE_CHECKING:
   from collections.abc import Iterable
@@ -157,26 +160,41 @@ def _raw(name: str) -> np.ndarray:
 
 
 @cache
-def _table() -> dict[str, np.ndarray]:
-  """Per-feature min-max scaled [125] vector per registry robot."""
+def _bounds() -> tuple[np.ndarray, np.ndarray]:
+  """Per-feature minimum and maximum of the raw vector over the training robots."""
   raw = np.stack([_raw(n) for n in ROBOTS])
-  lo, hi = raw.min(0), raw.max(0)
+  return raw.min(0), raw.max(0)
+
+
+def _scale(raw: np.ndarray) -> np.ndarray:
+  lo, hi = _bounds()
   span = hi - lo
   const = span <= 1e-12 * np.maximum(1.0, np.abs(hi))
-  scaled = np.where(const, 0.0, 2 * (raw - lo) / np.where(const, 1.0, span) - 1)
-  return {n: scaled[i] for i, n in enumerate(ROBOTS)}
+  return np.where(const, 0.0, 2 * (raw - lo) / np.where(const, 1.0, span) - 1)
+
+
+@cache
+def _table() -> dict[str, np.ndarray]:
+  """Per-feature min-max scaled [125] vector per training robot."""
+  return {n: _scale(_raw(n)) for n in ROBOTS}
+
+
+@cache
+def _scaled(name: str) -> np.ndarray:
+  """Scaled [125] vector of a training robot or a variant."""
+  return _table()[name] if name in ROBOTS else _scale(_raw(name))
 
 
 def morphology_vector(
   name: str, actor: bool = False, actor_geometry: bool = True
 ) -> torch.Tensor:
-  """Scaled morphology vector of a registry robot, float32 [125].
+  """Scaled morphology vector of a training robot or a variant, float32 [125].
 
   With `actor=True` and `actor_geometry=False`: the actuator part only [116].
   """
-  if name not in ROBOTS:
-    raise ValueError(f"unknown robot {name!r}; expected one of {ROBOTS}")
-  vec = _table()[name]
+  if name not in ROBOTS + VARIANTS:
+    raise ValueError(f"unknown robot {name!r}; expected one of {ROBOTS + VARIANTS}")
+  vec = _scaled(name)
   if actor and not actor_geometry:
     vec = vec[:ACTUATOR_DIM]
   return torch.tensor(vec, dtype=torch.float32)

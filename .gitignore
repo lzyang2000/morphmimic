@@ -10,3 +10,7 @@ outputs/
 videos/
 MUJOCO_LOG.TXT
 deploy/third_party/
+
+# Hardware tick recordings (deploy.run --record) and renders at the repo root
+*_ticks.npz
+/*.mp4

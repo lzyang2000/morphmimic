@@ -1,4 +1,5 @@
-"""World-model state layout, canonical frames (heading, root) and canonical features.
+"""World-model state layout, canonical frames (heading, root) and canonical features
+.
 
 All functions take arbitrary leading batch dims, are differentiable and never modify
 their inputs. Quaternions are wxyz.
@@ -20,7 +21,14 @@ from mjlab.utils.lab_api.math import (
 )
 from torch import Tensor, nn
 
-from morphmimic.constants import LOCAL_DIM, NUM_BODIES, NUM_JOINTS, ROOT_IDX, STATE_DIM
+from morphmimic.constants import (
+  ANCHOR_IDX,
+  LOCAL_DIM,
+  NUM_BODIES,
+  NUM_JOINTS,
+  ROOT_IDX,
+  STATE_DIM,
+)
 
 # Section sizes of the 240-dim world-frame state, in layout order.
 _STATE_SECTIONS = (
@@ -115,6 +123,12 @@ def root_frame(s: Tensor) -> Frame:
   p = split_state(s)
   quat = nn.functional.normalize(p.body_quat[..., ROOT_IDX, :], dim=-1)
   return Frame(pos_xy=p.body_pos[..., ROOT_IDX, :2], quat=quat)
+
+
+def anchor_quat(s: Tensor) -> Tensor:
+  """Full orientation [..., 4] (wxyz, world) of the anchor body (`ANCHOR_IDX`,
+  torso_link) of a state [..., 240], renormalised as `root_frame`'s."""
+  return nn.functional.normalize(split_state(s).body_quat[..., ANCHOR_IDX, :], dim=-1)
 
 
 def state_frame(s: Tensor, mode: FrameMode) -> Frame:

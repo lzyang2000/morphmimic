@@ -1,4 +1,5 @@
-"""AgiBot X2 Ultra spec: 29 body joints + 2 head joints, wrist yaw/roll swapped."""
+"""AgiBot X2 Ultra spec: 29 body joints + 2 head joints, wrist yaw/roll swapped; the
+actuators are AgiBot's official RL plant (`robots.x2_agibot`)."""
 
 from __future__ import annotations
 
@@ -69,11 +70,17 @@ def x2_spec() -> RobotSpec:
     get_x2_robot_cfg,
   )
 
+  from morphmimic.robots.x2_agibot import agibot_action_scale, get_x2_agibot_robot_cfg
+
   hands = {f"{s}_wrist_yaw_link": f"{s}_wrist_roll_link" for s in ("left", "right")}
+  head = {
+    k: v for k, v in X2_ULTRA_BEYONDMIMIC_KPKD_10HZ_ACTION_SCALE.items()
+    if k.startswith("head")
+  }
   return RobotSpec(
     name="x2",
-    entity_cfg_fn=get_x2_robot_cfg,
-    action_scale=dict(X2_ULTRA_BEYONDMIMIC_KPKD_10HZ_ACTION_SCALE),
+    entity_cfg_fn=get_x2_agibot_robot_cfg,
+    action_scale=agibot_action_scale(head),
     joint_names=X2_JOINT_NAMES,
     root_body="pelvis",
     anchor_body="torso_link",

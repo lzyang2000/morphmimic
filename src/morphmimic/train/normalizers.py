@@ -8,6 +8,8 @@ used as constants everywhere else (imagination differentiates through the affine
 Data parallel (`sync=True`, one normaliser copy per rank): every update folds the union
 of all ranks' batches, so the copies hold the statistics of every sample collected on
 any rank and stay identical (the ranks start from the same, broadcast, statistics).
+`pool_ranks_` merges copies that each fit their own samples into one pooled set (a
+multi-robot resume that turns `TrainCfg.pool_norms` on).
 """
 
 from __future__ import annotations
@@ -83,6 +85,27 @@ class RunningNormalizer(nn.Module):
     var = (square - shift * shift).clamp(min=0.0)
     dtype = self.mean.dtype
     return total.round().long(), (c + shift).to(dtype), var.to(dtype)
+
+  @torch.no_grad()
+  def pool_ranks_(self) -> None:
+    """Collective (needs a process group): replaces every rank's statistics by those
+    of the union of all ranks' samples (counts summed; two all-reduces, float64), so
+    copies that each fit their own data become one pooled set. A union without
+    samples leaves the statistics as they are. Once, when a resume turns pooling on
+    (`TrainCfg.pool_norms`)."""
+    n = self.count.double()
+    first = torch.cat([n.reshape(1), n * self.mean.double()])
+    dist.all_reduce(first)
+    total = first[0]
+    if total == 0:  # the same on every rank: none takes the second all-reduce
+      return
+    mean = first[1:] / total
+    d = self.mean.double() - mean
+    second = n * (self.var.double() + d * d)
+    dist.all_reduce(second)
+    self.mean.copy_(mean)
+    self.var.copy_(second / total)
+    self.count.copy_(total.round().long())
 
   def forward(self, x: Tensor) -> Tensor:
     return normalize(x, self.mean, self.var, self.eps)

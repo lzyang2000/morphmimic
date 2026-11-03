@@ -44,6 +44,10 @@ NAME_FILTER_KEYWORDS: tuple[str, ...] = (
   "seat",
 )
 
+# Sessions whose clip names carry no prop or terrain information (LAFAN1 names are
+# `<action><n>_subject<k>_<clip>`): only the feasibility filter applies.
+NAMED_OK_SESSIONS: tuple[str, ...] = ("lafan",)
+
 _NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
   (kw, re.compile(r"\b" + r"\s+".join(re.escape(w) for w in kw.split()) + r"\b"))
   for kw in NAME_FILTER_KEYWORDS
@@ -64,8 +68,11 @@ FLOATING_PELVIS_Z = 0.6
 FLOATING_SPEED = 0.3
 
 
-def name_filter_reject(name: str) -> str | None:
-  """First keyword of NAME_FILTER_KEYWORDS found in the clip name, else None."""
+def name_filter_reject(name: str, session: str | None = None) -> str | None:
+  """First keyword of NAME_FILTER_KEYWORDS found in the clip name, else None. Clips
+  of a NAMED_OK_SESSIONS session (`<session>/<clip>`) always pass."""
+  if session in NAMED_OK_SESSIONS:
+    return None
   text = re.sub(r"[_\-]+", " ", name.lower())
   for kw, pattern in _NAME_PATTERNS:
     if pattern.search(text):

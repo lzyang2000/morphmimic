@@ -9,7 +9,8 @@ randomisation, floor friction 1.0, no actuator delay) and writes:
   native joint order, default pose, action scale, the canonical joint map, the
   kinematic tree from the root to the slot-0 and anchor bodies, the control timing,
   the PD gains, and for DC-motor joints (the X2's) the torque-speed curve, which
-  `sim_node.py` applies to the explicit PD it computes for them. Committed.
+  `sim_node.py` applies to the explicit PD it computes for them. Committed;
+  `test_sim2sim.py` re-derives it.
 - `<out>/<robot>.xml` (meshes in `<out>/meshes/<robot>/`): the env's scene as plain,
   readable MJCF: the robot with the actuators, armature, floor, friction and solver
   options training used, which the robot's own MJCF does not hold. The export reloads
@@ -36,6 +37,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from deploy.hardware.pose_source import SimPoseSource
 from deploy.sim2sim.obs import ROBOTS_DIR, Robot
 
 _PREFIX = "robot/"
@@ -52,8 +54,9 @@ def fk_tree(m: mujoco.MjModel, native: list[str], root_body: str, slot0_body: st
             anchor_body: str, imu_body: str, prefix: str = _PREFIX) -> dict:
   """The kinematic tree of `obs.Robot` (`fk`): the root body and every body between it
   and the slot-0, anchor and IMU bodies, root first, each with its parent, its
-  orientation in the parent and its hinge joints (`native` index, axis, reference
-  angle)."""
+  position and orientation in the parent and its hinge joints (`native` index, axis,
+  reference angle). Raises ValueError for a hinge off its body's origin (`jnt_pos` not
+  zero): the tree has no joint offsets (none on the G1, X2 or T2)."""
 
   def body(name: str) -> int:
     i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, prefix + name)
@@ -84,6 +87,11 @@ def fk_tree(m: mujoco.MjModel, native: list[str], root_body: str, slot0_body: st
       if m.jnt_type[j] != mujoco.mjtJoint.mjJNT_HINGE:
         raise ValueError("only hinge joints below the root are supported")
       name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j).removeprefix(prefix)
+      if np.any(m.jnt_pos[j] != 0.0):
+        # `obs.Robot`'s forward kinematics rotates each body about its own origin.
+        raise ValueError(f"hinge {name} sits at {m.jnt_pos[j].tolist()} in its body, not"
+                         " at the body origin; the kinematic tree supports origin hinges"
+                         " only")
       joints.append({
         "name": name,
         "native_index": native.index(name),
@@ -93,6 +101,7 @@ def fk_tree(m: mujoco.MjModel, native: list[str], root_body: str, slot0_body: st
     bodies.append({
       "name": mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, b).removeprefix(prefix),
       "parent": -1 if b == root else order.index(int(m.body_parentid[b])),
+      "pos": [0.0, 0.0, 0.0] if b == root else m.body_pos[b].tolist(),
       "quat": [1.0, 0.0, 0.0, 0.0] if b == root else m.body_quat[b].tolist(),
       "joints": joints,
     })
@@ -154,12 +163,17 @@ def actuator_constants(spec, native: list[str]) -> dict:
   """Each native joint's PD gains and effort limit from the robot's actuator configs,
   and, when any joint is a DC motor (mjlab `DcMotorActuatorCfg`: explicit PD clipped to
   the torque-speed curve), each joint's stall torque and no-load speed (0 for the
-  built-in PD joints)."""
+  built-in PD joints) and the curve's law: "mjlab" (`DcMotorActuator`, full braking
+  torque at any speed) or "booster" (`BoosterMotorActuatorCfg`, the bound falls with
+  |v| in both directions); one law per robot."""
   from mjlab.actuator import BuiltinPositionActuatorCfg, DcMotorActuatorCfg
+
+  from morphmimic.robots.booster_motor import BoosterMotorActuatorCfg
 
   actuators = spec.entity_cfg_fn().articulation.actuators
   n = len(native)
   kp, kd, effort, sat, vmax = (np.zeros(n) for _ in range(5))
+  laws = set()
   for i, name in enumerate(native):
     hits = [a for a in actuators if any(re.fullmatch(e, name) for e in a.target_names_expr)]
     if len(hits) != 1:
@@ -170,9 +184,16 @@ def actuator_constants(spec, native: list[str]) -> dict:
     kp[i], kd[i], effort[i] = a.stiffness, a.damping, a.effort_limit
     if isinstance(a, DcMotorActuatorCfg):
       sat[i], vmax[i] = a.saturation_effort, a.velocity_limit
+      laws.add("booster" if isinstance(a, BoosterMotorActuatorCfg) else "mjlab")
+  if len(laws) > 1:
+    raise ValueError(f"{spec.name}: DC motors with both torque-speed laws")
   out = {"kp": kp.tolist(), "kd": kd.tolist(), "effort_limit": effort.tolist()}
   if vmax.any():
-    out["dc_motor"] = {"saturation_effort": sat.tolist(), "velocity_limit": vmax.tolist()}
+    out["dc_motor"] = {
+      "saturation_effort": sat.tolist(),
+      "velocity_limit": vmax.tolist(),
+      "law": laws.pop(),
+    }
   return out
 
 
@@ -215,9 +236,9 @@ def _option_xml(opt) -> str:
 def write_scene_xml(env, robot: str, out: Path) -> Path:
   """The env's scene as standalone MJCF `<out>/<robot>.xml`, its meshes copied to
   `<out>/meshes/<robot>/`."""
-  from morphmimic.robots import get_robot
-
   from mjlab.utils.spec import fix_spec_xml, strip_buffer_textures
+
+  from morphmimic.robots import get_robot
 
   spec = env.scene.spec.copy()
   strip_buffer_textures(spec)
@@ -253,8 +274,9 @@ def check_same_model(trained: mujoco.MjModel, loaded: mujoco.MjModel) -> list[st
 
 
 def check_fk(model: mujoco.MjModel, robot: Robot, trials: int = 20) -> float:
-  """Largest angle (rad) between MuJoCo's slot-0 and anchor orientations and those
-  `Robot` computes from the IMU body's orientation and the joints, over random poses."""
+  """Largest error between MuJoCo's slot-0 and anchor orientations (rad) and anchor
+  position (m) and those `Robot` computes from the IMU body's orientation, the joints
+  and (the position) the free body's position and yaw, over random poses."""
   rng = np.random.default_rng(0)
   data = mujoco.MjData(model)
   slot0 = _body_id(model, robot.tracked_bodies[0])
@@ -274,6 +296,8 @@ def check_fk(model: mujoco.MjModel, robot: Robot, trials: int = 20) -> float:
                       (slot0, robot.slot0_quat(data.xquat[imu].copy(), q))):
       dot = abs(float(np.dot(est, data.xquat[body])))
       worst = max(worst, 2.0 * np.arccos(min(1.0, dot)))
+    pos, _ = robot.anchor_pose(*SimPoseSource(model, data).pose(), data.xquat[imu].copy(), q)
+    worst = max(worst, float(np.abs(pos - data.xpos[anchor]).max()))
   return worst
 
 
@@ -282,7 +306,7 @@ def export_clips(env, robot: str, yaml_path: str, clips: list[str], out: Path) -
   import torch
 
   from morphmimic.robots import get_robot
-  from deploy.sim2sim.clip_playback import ClipPlayback, resolve_clip
+  from morphmimic.scripts.play import ClipPlayback, resolve_clip
 
   spec = get_robot(robot)
   m = env.sim.mj_model
@@ -319,7 +343,7 @@ def export_clips(env, robot: str, yaml_path: str, clips: list[str], out: Path) -
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-  parser.add_argument("--robot", required=True, choices=["g1", "x2", "t2"])
+  parser.add_argument("--robot", required=True, choices=["g1", "x2", "t2", "g1_amber"])
   parser.add_argument("--subset-yaml", required=True)
   parser.add_argument("--clips", nargs="+", required=True)
   parser.add_argument("--out", type=Path, required=True)
@@ -348,9 +372,9 @@ def main() -> None:
     if robot.native_joint_names != tuple(constants["native_joint_names"]):
       raise ValueError(f"robots/{args.robot}.json is stale: re-run with --bake")
     err = check_fk(loaded, robot)
-    print(f"[export] {args.robot}: model {model_path}; FK from the IMU max error {err:.2e} rad")
+    print(f"[export] {args.robot}: model {model_path}; FK from the IMU max error {err:.2e} (rad, m)")
     if err > 1e-5:
-      raise ValueError(f"{args.robot}: anchor FK does not match MuJoCo ({err:.2e} rad)")
+      raise ValueError(f"{args.robot}: anchor FK does not match MuJoCo ({err:.2e} rad or m)")
     for path in export_clips(env, args.robot, args.subset_yaml, args.clips, args.out):
       print(f"[export] {args.robot}: {path}")
   finally:

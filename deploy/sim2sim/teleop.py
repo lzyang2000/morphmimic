@@ -3,8 +3,8 @@
 `TeleopReference` replaces the clip (`policy_node.py --source teleop`): it subscribes to
 the GMR streamer (`deploy/vr_teleop/streamer.py --robot ROBOT`, `RefMessage` chunks of
 reference states [240]) and, once per control step, returns the window of K reference
-states the policy tracks. The mode logic is shared with
-`vr_teleop.controller.SimController`: follow the streamer's mode, IDLE after
+states the policy tracks. The mode logic is SONIC's, shared with the five-point sim
+(`vr_teleop.controller.SimController`): follow the streamer's mode, IDLE after
 `TIMEOUT_S` of silence, a jitter buffer `DELAY` frames deep, OFF latched after a fall
 (the robot reset) until a recalibration.
 
@@ -22,6 +22,11 @@ Only the heading is aligned, never the position: the goals are position-free (th
 motion goal's anchor path is in the reference's own heading frame, the five-point
 positions in the reference pelvis's), so the robot needs no odometry. The orientations
 are relative to the robot's own (IMU and joint encoders, `Robot.slot0_quat`).
+
+`HumanTeleopReference` is the same for the human interface (`policy_node.py --interface
+human`): it reads the human streamer (`streamer.py --target human`, frames of the
+operator on the uniform skeleton) and returns human windows [K, 168]
+(`deploy/sim2sim/human.py`), the stand being the uniform skeleton's (`human_stand`).
 """
 
 from __future__ import annotations
@@ -33,7 +38,8 @@ import time
 import numpy as np
 import zmq
 
-from deploy.sim2sim.obs import GOAL_K, Robot, quat_mul
+from deploy.sim2sim.human import blend_human, human_heading, human_stand, turn_human
+from deploy.sim2sim.obs import GOAL_K, Robot, quat_mul, slerp
 from deploy.vr_teleop.constants import DELAY, FPS, STAND_BLEND_S, TIMEOUT_S
 from deploy.vr_teleop.controller import SimController, recovery_steps
 from deploy.vr_teleop.controls import POSE, POSE_PAUSE
@@ -73,29 +79,24 @@ def turn_states(states: np.ndarray, yaw: float, origin: np.ndarray) -> np.ndarra
 def blend_states(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
   """`a` -> `b` [..., 240] by `alpha`: linear, the body orientations slerped."""
   out = (1.0 - alpha) * a + alpha * b
-  qa, qb = _bodies(a, _QUAT, 4), _bodies(b, _QUAT, 4)
-  dot = np.sum(qa * qb, axis=-1, keepdims=True)
-  qb = np.where(dot < 0.0, -qb, qb)  # Shortest arc.
-  theta = np.arccos(np.clip(np.abs(dot), -1.0, 1.0))
-  sin = np.sin(theta)
-  near = sin < 1e-8
-  safe = np.where(near, 1.0, sin)
-  wa = np.where(near, 1.0 - alpha, np.sin((1.0 - alpha) * theta) / safe)
-  wb = np.where(near, alpha, np.sin(alpha * theta) / safe)
-  q = wa * qa + wb * qb
-  out[..., _QUAT] = (q / np.linalg.norm(q, axis=-1, keepdims=True)).reshape(*a.shape[:-1], -1)
+  q = slerp(_bodies(a, _QUAT, 4), _bodies(b, _QUAT, 4), alpha)
+  out[..., _QUAT] = q.reshape(*a.shape[:-1], -1)
   return out
 
 
 class TeleopReference:
-  """The live reference windows of one robot (see the module docstring)."""
+  """The live reference windows of one robot (see the module docstring). The window
+  layout is a robot reference state per frame; `HumanTeleopReference` overrides `kind`
+  and the frame operations below for human frames."""
+
+  kind = "ref"  # The stream messages it reads (`protocol.RefMessage.kind`).
 
   def __init__(self, robot: Robot, endpoint: str, delay: int = DELAY,
                timeout_s: float = TIMEOUT_S, clock=time.monotonic) -> None:
     self.robot = robot
     self.controller = SimController(delay=delay, timeout_s=timeout_s)
     self.clock = clock
-    self.stand = np.asarray(json.loads(STAND_FILE.read_text())[robot.name]["state"])
+    self.stand = self._stand()
     self._sock = zmq.Context.instance().socket(zmq.SUB)
     self._sock.setsockopt(zmq.SUBSCRIBE, b"")
     self._sock.setsockopt(zmq.LINGER, 0)
@@ -125,9 +126,7 @@ class TeleopReference:
         if self.bad_messages == 1:
           print(f"[policy_node] skipping a bad stream message: {e}", flush=True)
         continue
-      if msg.robot != self.robot.name:
-        raise ValueError(f"the streamer retargets to {msg.robot}, this policy node runs "
-                         f"{self.robot.name}: restart the streamer with --robot {self.robot.name}")
+      self._check(msg)
       msgs.append(msg)
 
   def reset(self) -> None:
@@ -137,9 +136,9 @@ class TeleopReference:
           flush=True)
 
   def window(self, step_id: int, imu_quat: np.ndarray, q: np.ndarray) -> np.ndarray:
-    """This control step's K reference states [K, 240], from the robot's IMU
-    orientation and native joint positions (`step_id` is unused: the stream's own
-    clock paces the frames)."""
+    """This control step's window (K reference states [K, 240]; human frames [K, 168]
+    in `HumanTeleopReference`), from the robot's IMU orientation and native joint
+    positions (`step_id` is unused: the stream's own clock paces the frames)."""
     c = self.controller
     previous = c.mode
     mode = c.tick(self.clock(), self.drain())
@@ -162,21 +161,86 @@ class TeleopReference:
       return self._last if self._last is not None else self._standing(robot_yaw, True)
     live = np.stack([f.state for f in frames])
     if c.entered_pose or c.calib_changed or self._turn is None:
-      origin = live[0, 58:60].copy()
-      self._turn = (robot_yaw - heading(live[0, 100:104]), origin)
+      origin = self._origin(live[0]).copy()
+      self._turn = (robot_yaw - self._heading(live[0]), origin)
       self._blend_from = self._last
-    live = turn_states(live, *self._turn)  # About the entry pelvis, which goes to x = y = 0.
+    live = self._turned(live, *self._turn)  # About the entry pelvis, which goes to x = y = 0.
     if c.blend_alpha < 1.0 and self._blend_from is not None:
-      live = blend_states(self._blend_from, live, c.blend_alpha)
+      live = self._blend(self._blend_from, live, c.blend_alpha)
     return live
 
   def _standing(self, robot_yaw: float, entered: bool) -> np.ndarray:
     if entered or self._stand_to is None:
-      self._stand_to = np.repeat(turn_states(self.stand, robot_yaw, np.zeros(2))[None], GOAL_K, 0)
+      self._stand_to = np.repeat(self._turned(self.stand, robot_yaw, np.zeros(2))[None],
+                                 GOAL_K, 0)
       self._blend_from = self._last if self._last is not None else self._stand_to
       self._stand_steps = 0
       self._turn = None
     else:
       self._stand_steps += 1
     alpha = min(1.0, self._stand_steps / max(1, round(STAND_BLEND_S * FPS)))
-    return blend_states(self._blend_from, self._stand_to, alpha)
+    return self._blend(self._blend_from, self._stand_to, alpha)
+
+  # The frame layout: a robot reference state [240].
+
+  def _check(self, msg) -> None:
+    """Refuses (ValueError) a stream of the other kind or for another robot."""
+    if msg.kind != "ref":
+      raise ValueError("the streamer sends the human skeleton (--target human): run the"
+                       " policy node with --interface human, or restart the streamer with"
+                       f" --robot {self.robot.body}")
+    if msg.robot != self.robot.body:
+      raise ValueError(f"the streamer retargets to {msg.robot}, this policy node runs "
+                       f"{self.robot.name}: restart the streamer with --robot {self.robot.body}")
+
+  def _stand(self) -> np.ndarray:
+    return np.asarray(json.loads(STAND_FILE.read_text())[self.robot.body]["state"])
+
+  @staticmethod
+  def _origin(frame: np.ndarray) -> np.ndarray:
+    return frame[58:60]
+
+  @staticmethod
+  def _heading(frame: np.ndarray) -> float:
+    return heading(frame[100:104])
+
+  @staticmethod
+  def _turned(frames: np.ndarray, yaw: float, origin: np.ndarray) -> np.ndarray:
+    return turn_states(frames, yaw, origin)
+
+  @staticmethod
+  def _blend(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
+    return blend_states(a, b, alpha)
+
+
+class HumanTeleopReference(TeleopReference):
+  """The live human windows [K, 168] (`policy_node.py --interface human --source
+  teleop`): the same modes, jitter buffer and heading alignment, on frames of the
+  operator on the uniform skeleton; the heading is the human pelvis's in the robot's
+  convention (`human_heading`), the stand the uniform skeleton's."""
+
+  kind = "human"
+
+  def _check(self, msg) -> None:
+    if msg.kind != "human":
+      raise ValueError(f"the streamer retargets to {msg.robot} (GMR): this policy node reads"
+                       " the human skeleton; restart the streamer with --target human")
+
+  def _stand(self) -> np.ndarray:
+    return human_stand()
+
+  @staticmethod
+  def _origin(frame: np.ndarray) -> np.ndarray:
+    return frame[:2]  # The Pelvis slot's position comes first.
+
+  @staticmethod
+  def _heading(frame: np.ndarray) -> float:
+    return human_heading(frame)
+
+  @staticmethod
+  def _turned(frames: np.ndarray, yaw: float, origin: np.ndarray) -> np.ndarray:
+    return turn_human(frames, yaw, origin)
+
+  @staticmethod
+  def _blend(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
+    return blend_human(a, b, alpha)

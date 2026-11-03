@@ -17,7 +17,8 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 
-from morphmimic.constants import FPS, LOCAL_DIM, TRACKED_BODY_NAMES
+from morphmimic.constants import FPS, HUMAN_JOINTS, LOCAL_DIM, TRACKED_BODY_NAMES
+from morphmimic.data.human_convert import sidecar_path
 from morphmimic.data.manifest import load_subset
 from morphmimic.model.state import (
   FrameMode,
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 _JOINT_KEYS = ("joint_pos", "joint_vel")
 _BODY_KEYS = ("body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w")
 _ROOT_KEYS = ("root_pos_w", "root_quat_w", "root_lin_vel_w", "root_ang_vel_w")
+_HUMAN_KEYS = ("human_pos_w", "human_quat_w")
 # Half-precision storage: the |x|, |y| of world body positions from which the spacing
 # of representable values (ulp) reaches 1/64 m = 1.6 cm (float16: 16 m, 10-bit
 # mantissa; bfloat16: 2 m, 7-bit mantissa). `MotionLibrary` warns beyond it.
@@ -61,6 +63,10 @@ class MotionLibrary:
   `bin_size // 2` and `bin_size + bin_size // 2 - 1` frames (25 to 74 at 1 s, 50 Hz),
   except that a clip shorter than `bin_size // 2` is a single short bin. A tiny last
   bin would only start very short episodes and dominate return-based sampling.
+
+  Human poses (`human_pos_w`, `human_quat_w`, the 24 `HUMAN_JOINTS` slots) come from
+  each clip's sidecar (`human_convert.sidecar_path`, under `human_root` when given).
+  Every clip has one, or none does (both `None`); a partial set is an error.
   """
 
   joint_pos: Tensor  # [N, 29]
@@ -73,6 +79,8 @@ class MotionLibrary:
   root_quat_w: Tensor  # [N, 4] wxyz
   root_lin_vel_w: Tensor  # [N, 3]
   root_ang_vel_w: Tensor  # [N, 3]
+  human_pos_w: Tensor | None  # [N, 24, 3]
+  human_quat_w: Tensor | None  # [N, 24, 4] wxyz
 
   def __init__(
     self,
@@ -82,6 +90,7 @@ class MotionLibrary:
     body_names: tuple[str, ...] = TRACKED_BODY_NAMES,
     bin_seconds: float = 1.0,
     robot: RobotSpec | None = None,
+    human_root: str | None = None,
   ) -> None:
     if not clip_paths:
       raise ValueError("MotionLibrary needs at least one clip.")
@@ -91,11 +100,24 @@ class MotionLibrary:
     self.fps = FPS
     self.clip_names = [Path(p).stem for p in clip_paths]
 
+    sidecars = [sidecar_path(p, human_root) for p in clip_paths]
+    no_sidecar = [str(p) for p in sidecars if not p.exists()]
+    has_human = len(no_sidecar) < len(sidecars)
+    if has_human and no_sidecar:
+      raise ValueError(
+        f"{len(no_sidecar)} of {len(sidecars)} clips have no human sidecar (all or"
+        f" none must), e.g. {no_sidecar[:10]}"
+      )
     parts: dict[str, list[np.ndarray]] = {
-      k: [] for k in (*_JOINT_KEYS, *_BODY_KEYS, *_ROOT_KEYS)
+      k: [] for k in (*_JOINT_KEYS, *_BODY_KEYS, *_ROOT_KEYS, *_HUMAN_KEYS)
     }
     lengths = []
-    for path in tqdm(clip_paths, desc="motion library", disable=len(clip_paths) <= 100):
+    for path, side in tqdm(
+      zip(clip_paths, sidecars),
+      total=len(clip_paths),
+      desc="motion library",
+      disable=len(clip_paths) <= 100,
+    ):
       with np.load(path) as z:
         fps = int(z["fps"])
         if fps != FPS:
@@ -128,6 +150,20 @@ class MotionLibrary:
           parts[key].append(body[:, idx])
           parts[root_key].append(body[:, root])
         lengths.append(frames)
+      if has_human:
+        with np.load(side) as h:
+          human_fps = int(h["fps"])
+          if human_fps != FPS:
+            raise ValueError(f"{path}: human sidecar fps {human_fps}, expected {FPS}")
+          if tuple(str(n) for n in h["human_joint_names"]) != HUMAN_JOINTS:
+            raise ValueError(f"{side}: human_joint_names are not HUMAN_JOINTS.")
+          human_frames = len(h["human_pos_w"])
+          if human_frames != frames:
+            raise ValueError(
+              f"{path}: human sidecar has {human_frames} frames, the clip {frames}"
+            )
+          for key in _HUMAN_KEYS:
+            parts[key].append(h[key])
 
     if dtype in _HALF_XY_LIMIT_M:
       xy_max = max(float(np.abs(pos[..., :2]).max()) for pos in parts["body_pos_w"])
@@ -159,6 +195,8 @@ class MotionLibrary:
     self.root_quat_w = cat("root_quat_w")
     self.root_lin_vel_w = cat("root_lin_vel_w")
     self.root_ang_vel_w = cat("root_ang_vel_w")
+    self.human_pos_w = cat("human_pos_w") if has_human else None
+    self.human_quat_w = cat("human_quat_w") if has_human else None
 
     # Clips.
     self.num_clips = len(lengths)
@@ -234,11 +272,27 @@ class MotionLibrary:
     """Frames left in the clip after each frame (0 at the clip's last frame)."""
     return self.clip_end(frames) - frames
 
+  def _window(self, frames: Tensor, K: int) -> Tensor:
+    """Frames f, ..., f+K-1 [..., K], held at the clip's last frame."""
+    window = frames.unsqueeze(-1) + torch.arange(K, device=self.device)
+    return torch.minimum(window, self.clip_end(frames).unsqueeze(-1))
+
   def future(self, frames: Tensor, K: int) -> Tensor:
     """States of frames f, ..., f+K-1 [..., K, 240], held at the clip's last frame."""
-    offsets = torch.arange(K, device=self.device)
-    window = frames.unsqueeze(-1) + offsets
-    return self.state(torch.minimum(window, self.clip_end(frames).unsqueeze(-1)))
+    return self.state(self._window(frames, K))
+
+  @property
+  def has_human(self) -> bool:
+    """Whether the clips came with human sidecars."""
+    return self.human_pos_w is not None
+
+  def human_future(self, frames: Tensor, K: int) -> Tensor:
+    """Human poses of frames f, ..., f+K-1 [..., K, 24, 7] float32 (position, then
+    quaternion wxyz), held at the clip's last frame like `future`."""
+    if self.human_pos_w is None or self.human_quat_w is None:
+      raise RuntimeError("library has no human data")
+    window = self._window(frames, K)
+    return torch.cat([self.human_pos_w[window], self.human_quat_w[window]], -1).float()
 
   def frame_bin(self, frames: Tensor) -> Tensor:
     """Bin id of each global frame: the last bin starting at or before it (bins tile

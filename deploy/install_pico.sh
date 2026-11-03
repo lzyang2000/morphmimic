@@ -8,9 +8,12 @@
 # package into .venv (Python 3.11, uv). It does not use sudo and does not install the
 # XRoboToolkit PC service .deb; do that yourself (README, "Teleop").
 #
-# The upstream bindings use scikit-build-core (CPython stable ABI, no pybind11) and ship
-# the prebuilt x86_64 and aarch64 libPXREARobotSDK.so in vendor/. So the build needs
-# only a C++17 compiler; CMake >= 3.26 is fetched by the build backend if missing.
+# Why this differs from SONIC's install_pico.sh: SONIC builds an older pybind11 +
+# CMake version of the bindings against a libPXREARobotSDK.so it vendors (the x86_64 one
+# is a git-lfs pointer in a plain clone). The upstream repo has since moved to
+# scikit-build-core (CPython stable ABI, no pybind11) and ships the prebuilt x86_64 and
+# aarch64 libPXREARobotSDK.so in vendor/. So the build needs only a C++17 compiler;
+# CMake >= 3.26 is fetched by the build backend if missing.
 #
 # `uv sync` (without --inexact) removes packages that are not in the lockfile, which
 # includes xrobotoolkit_sdk. After this script, use `uv sync --group teleop --inexact`

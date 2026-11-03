@@ -2,9 +2,10 @@
 # Build the Unitree SDK's python binding (`unitree_interface`) into this repo's uv env,
 # for the G1 hardware node (deploy/hardware/g1_node.py). `third_party/unitree_sdk2_wrapper`
 # is a fork of Unitree's unitree_sdk2 (prebuilt libunitree_sdk2.a for x86_64 and aarch64,
-# CycloneDDS, the headers) with a pybind11 binding on top. Run it on the machine that
-# talks to the robot (the workstation on the robot's network, or the robot's own
-# computer); it needs sudo for the system build packages.
+# CycloneDDS, the headers) with a pybind11 binding on top, the one
+# humanoid_dodgeball builds. Run it on the machine that talks to the robot (the
+# workstation on the robot's network, or the robot's own computer); it needs sudo for the
+# system build packages.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

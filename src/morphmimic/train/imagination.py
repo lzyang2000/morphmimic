@@ -31,18 +31,36 @@ then `finish_rollout` (stacking, values). The trainer passes compiled versions o
 these two (fixed shapes, no host sync) and keeps the noise draw and the freezing
 outside the compiled regions.
 
-Keypoint variant: `imagine_step_kp` acts from the masked,
-jittered five-point goal through the keypoint encoder,
+Human variant: `imagine_step_human` acts from the masked, jittered human skeleton
+goal (the 24 SMPL joints of the K future frames, `model/human.py`) through the human
+encoder, with the human Spine3's (else the anchor's) orientation relative to the
+imagined torso (anchor body) orientation per future frame through its own normaliser
+(keypoint goal version 10; zeros where the heading mask is off),
 
-    z_t = enc_kp(mask(kp_norm(kp(ŝ_t, ref_t..ref_t+K-1, jitter))))
+    z_t = enc_h(mask(human_norm(human(H_t..H_t+K-1, jitter)),
+                     heading_norm(rel(q(ŝ_t), H_t..))))
     a_t = dec(z_t, obs_norm(o_{t-9..t}))
     e_t = ||z_t - sg(enc(goal_norm(g_t)))||^2
 
 with the same world model, reward, termination and critic input (the full goal g_t,
-never the keypoint goal); `policy_objective(ro, cfg, align_weight)` adds the mean of e_t
-over the rewarded steps. The jitter perturbs only the actor's input
-(`kp_jitter_window`, drawn once per rollout like the sensor noise); reward,
+never the human goal). Every step also records the action gap to the motion teacher
+c_t = ||a_t - sg(dec(enc(goal_norm(g_t)), ...))||^2 / 29. `student_objective` sums
+three terms, each weighted and divided by its running scale (`TermScales`): -J
+(`return` student only), the mean of c_t and the mean of e_t over the rewarded steps.
+`return` keeps the gradient through the dynamics, with its own critic. `copy` detaches
+ŝ_t and the history at each step (no gradient through the dynamics) and the rollout
+has no critic (`finish_rollout(critic=None)`). The jitter perturbs only the actor's
+input (`human_jitter_window`, drawn once per rollout like the sensor noise); reward,
 termination and goal use the clean reference.
+
+Direct student (`direct`, the direct human policy `--policy-goal human`): the human
+encoder is the policy's encoder. Nothing is detached, the motion encoder is not called
+(no teacher: e_t and c_t are zeros) and every step records the reconstruction error
+of the stored goal, m_t = ||recon(z'_t, morph) - sg(goal_norm(g_t))||^2 / 670
+(`Policy.reconstruct`), where z'_t is z_t with the heading block of the detached
+torso orientation sg(q(ŝ_t)): m_t trains the human encoder and the head, never the
+decoder or earlier actions through the dynamics. `student_objective` then sums -J (with the motion critic) and
+the mean of m_t over the rewarded steps, each weighted and over its scale.
 
 The policy's and the critic's gradient clipping (`clip_grads_`, `fit_critic`) zero a
 non-finite gradient instead of stepping on it (`guarded_clip_grad_norm_`).
@@ -54,22 +72,33 @@ import contextlib
 import functools
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import torch
 from torch import Tensor, nn
 
-from morphmimic.constants import GOAL_K, KP_JITTER, NUM_JOINTS, OBS_NOISE, PROPRIO_DIM
-from morphmimic.model.keypoints import (
-  keypoint_features,
-  keypoint_jitter,
-  mask_keypoint_goal,
+from morphmimic.constants import (
+  GOAL_K,
+  HUMAN_JITTER,
+  NUM_JOINTS,
+  OBS_NOISE,
+  PROPRIO_DIM,
+  GoalAnchor,
+)
+from morphmimic.model.human import (
+  heading_features,
+  heading_from_goal,
+  human_features,
+  human_features_from_goal,
+  human_jitter,
+  mask_human_goal,
 )
 from morphmimic.model.rewards_torch import (
   PROPRIO_SLICES,
   critic_anchor_pos,
   goal_features,
 )
+from morphmimic.model.state import anchor_quat
 from morphmimic.train.normalizers import RunningNormalizer, normalize_history
 from morphmimic.train.obs_history import ObsHistory
 
@@ -95,14 +124,18 @@ class ImaginationCfg:
   obs_noise: dict[str, float] = field(default_factory=lambda: dict(OBS_NOISE))
   critic_epochs: int = 5
   critic_minibatches: int = 4
-  # Half-widths of the keypoint target jitter (`KP_JITTER` keys, `keypoint_jitter`).
-  kp_jitter_half: dict[str, float] = field(default_factory=lambda: dict(KP_JITTER))
+  # Half-widths of the human target jitter (`HUMAN_JITTER` keys, `human_jitter`).
+  human_jitter_half: dict[str, float] = field(
+    default_factory=lambda: dict(HUMAN_JITTER)
+  )
   clip_end_terminal: bool = False
   """Value zero after a clip's last frame (no bootstrap when the clip ends within the
   horizon). False: bootstrap V(ŝ_{T_b}) as for a time-out."""
   target_max: float | None = None
   """Upper clamp on each critic target R_t, applied inside the recursion so earlier
   targets bootstrap from the clamped ones (None: unclamped, the paper's targets)."""
+  goal_anchor: GoalAnchor = "reference"
+  """Frame of the motion goal's anchor position (`goal_features`), as the env's."""
 
 
 class ImaginedRollout(NamedTuple):
@@ -120,8 +153,10 @@ class ImaginedRollout(NamedTuple):
   local: Tensor  # wm.local_features(ŝ_0 .. ŝ_H) [B, H+1, 268]
   ctx: Tensor  # wm.scale_ctx(xi) [B, 33]
   trunc_mask: Tensor  # bool, t < T_b (step t is rewarded) [B, H]
-  latent_err: Tensor  # ||z_kp,t - sg(z_motion,t)||^2 [B, H]; zeros if not keypoint
+  latent_err: Tensor  # ||z_h,t - sg(z_motion,t)||^2 [B, H]; zeros if not human
+  action_err: Tensor  # human student's teacher action gap [B, H]; zeros if not human
   bootstrap: Tensor | None = None  # weight of V_{T_b} [B] (0: clip ended); None = 1
+  recon_err: Tensor | None = None  # direct student's goal reconstruction error [B, H]
 
   @property
   def num_rewarded(self) -> Tensor:
@@ -157,21 +192,29 @@ def act(
   return policy(normalize_history(obs_norm, obs_hist_flat), goal_norm(goal))
 
 
-def act_kp(
+def act_human(
   policy: Policy,
   obs_norm: RunningNormalizer,
-  kp_norm: RunningNormalizer,
+  human_norm: RunningNormalizer,
+  heading_norm: RunningNormalizer,
   obs_hist_flat: Tensor,
-  kp_feats: Tensor,
+  human_goal_raw: Tensor,
   point_mask: Tensor,
   frame_mask: Tensor,
+  heading_mask: Tensor,
 ) -> Tensor:
-  """`act` through the keypoint encoder: action [B, 29] from the raw stacked obs
-  [B, H * 93], raw keypoint features [B, 450] (`keypoint_features`) and the bool masks
-  `point_mask` [B, 5], `frame_mask` [B, K]. Masked blocks are zeroed after the
-  normalisation (`mask_keypoint_goal`), so their raw values do not matter."""
-  goal = mask_keypoint_goal(kp_norm(kp_feats), point_mask, frame_mask)
-  return policy.forward_kp(normalize_history(obs_norm, obs_hist_flat), goal)
+  """`act` through the human encoder: action [B, 29] from the raw stacked obs
+  [B, H * 93], the raw human goal [B, 1684] (`pack_human_goal`) and the bool masks
+  `point_mask` [B, 24], `frame_mask` [B, K], `heading_mask` [B]. The features go
+  through `human_norm` and the heading block (`heading_from_goal`) through
+  `heading_norm`; the masks act after the normalisation (`mask_human_goal`), so the
+  raw values under them do not matter."""
+  feats = human_features_from_goal(human_goal_raw, point_mask)
+  heading = heading_norm(heading_from_goal(human_goal_raw, point_mask))
+  goal = mask_human_goal(
+    human_norm(feats), point_mask, frame_mask, heading, heading_mask
+  )
+  return policy.forward_human(normalize_history(obs_norm, obs_hist_flat), goal)
 
 
 def noise_half_widths(noise: dict[str, float], device: torch.device) -> Tensor:
@@ -206,6 +249,12 @@ def reference_window(library: MotionLibrary, frame0: Tensor, length: int) -> Ten
   offsets = torch.arange(length, device=frame0.device)
   end = library.clip_end(frame0).unsqueeze(-1)
   return library.state(torch.minimum(frame0.unsqueeze(-1) + offsets, end))
+
+
+def human_window(library: MotionLibrary, frame0: Tensor, length: int) -> Tensor:
+  """Human poses of frames min(f_0 + j, clip_end), j < length -> [B, length, 24, 7]
+  (position, then quaternion), aligned with `reference_window`."""
+  return library.human_future(frame0, length)
 
 
 def imagine(
@@ -244,7 +293,16 @@ class ImaginedStep(NamedTuple):
   done: Tensor  # d̂_{t+1} [B]
   survival: Tensor  # ĉ_{t+1} [B]
   obs_hist: Tensor  # noisy history ending with o_{t+1} + eta [B, hist_len, 93]
-  latent_err: Tensor  # ||z_kp,t - sg(z_motion,t)||^2 [B]; zeros for `imagine_step`
+  latent_err: Tensor  # ||z_h,t - sg(z_motion,t)||^2 [B]; zeros for `imagine_step`
+  action_err: Tensor  # human student's teacher action gap [B]; zeros for `imagine_step`
+  recon_err: Tensor  # direct student's goal reconstruction error [B]; else zeros
+
+
+def anchor_kwargs(anchor: GoalAnchor) -> dict[str, GoalAnchor]:
+  """`anchor=` for `imagine_step`, `imagine_step_human` and `finish_rollout`: empty
+  for the default "reference", so the default calls are exactly the positional ones
+  of before the switch."""
+  return {} if anchor == "reference" else {"anchor": anchor}
 
 
 def imagine_step(
@@ -259,12 +317,15 @@ def imagine_step(
   goal_ref: Tensor,
   ctx: Tensor,
   noise: Tensor,
+  *,
+  anchor: GoalAnchor = "reference",
 ) -> ImaginedStep:
   """One imagined transition (module docstring) from ŝ_t with the noisy obs history
   [B, hist_len, 93], a_{t-1}, ĉ_t, `goal_ref` [B, K, 240] = ref_t .. ref_{t+K-1}, the
-  context xi and the sensor noise eta [B, 93] of o_{t+1}. The unit the trainer
-  compiles: one graph, replayed H times per rollout."""
-  goal = goal_norm(goal_features(state, goal_ref))
+  context xi and the sensor noise eta [B, 93] of o_{t+1}; the goal in the `anchor`
+  frame (`goal_features`). The unit the trainer compiles: one graph, replayed H times
+  per rollout."""
+  goal = goal_norm(goal_features(state, goal_ref, anchor))
   # Same input path as `act`.
   action = policy(normalize_history(obs_norm, obs_hist.flatten(1)), goal)
   return _transition(
@@ -284,10 +345,12 @@ def _transition(
   ctx: Tensor,
   noise: Tensor,
   latent_err: Tensor | None = None,
+  action_err: Tensor | None = None,
+  recon_err: Tensor | None = None,
 ) -> ImaginedStep:
   """The part of an imagined step after the action a_t (`imagine_step`,
-  `imagine_step_kp`): world-model step, reward, termination, next noisy observation.
-  `latent_err` None means zeros."""
+  `imagine_step_human`): world-model step, reward, termination, next noisy
+  observation. `latent_err`, `action_err` and `recon_err` None mean zeros."""
   next_state = wm.step(state, action, ctx)
   ref = goal_ref[:, 0]
   reward = wm.reward(next_state, ref, action, prev_action)
@@ -303,15 +366,19 @@ def _transition(
     survival=survival * (1.0 - done),
     obs_hist=ObsHistory.shifted(obs_hist, obs + noise),
     latent_err=torch.zeros_like(reward) if latent_err is None else latent_err,
+    action_err=torch.zeros_like(reward) if action_err is None else action_err,
+    recon_err=torch.zeros_like(reward) if recon_err is None else recon_err,
   )
 
 
-def imagine_step_kp(
+def imagine_step_human(
   wm: WorldModel,
   policy: Policy,
   obs_norm: RunningNormalizer,
   goal_norm: RunningNormalizer,
-  kp_norm: RunningNormalizer,
+  human_norm: RunningNormalizer,
+  heading_norm: RunningNormalizer,
+  student: Literal["copy", "return", "direct"],
   state: Tensor,
   obs_hist: Tensor,
   prev_action: Tensor,
@@ -321,22 +388,79 @@ def imagine_step_kp(
   noise: Tensor,
   point_mask: Tensor,
   frame_mask: Tensor,
+  heading_mask: Tensor,
   jitter: Tensor,
+  human_win: Tensor,
+  *,
+  anchor: GoalAnchor = "reference",
 ) -> ImaginedStep:
-  """`imagine_step` with the action from the keypoint encoder: the arguments after
-  `noise` are the bool masks `point_mask` [B, 5] and `frame_mask` [B, K] and the target
-  jitter `jitter` [B, K, 5, 6] of the K frames of `goal_ref` (`kp_jitter_window[:, t :
-  t + K]`). The goal stored for the critic is the full motion goal; `latent_err` [B] is
-  the squared distance of z_kp to the motion encoder's latent of that goal, a
-  stop-gradient target. Reward, termination and the next observation are as in
-  `imagine_step`. The unit the trainer compiles for the keypoint step."""
-  goal = goal_norm(goal_features(state, goal_ref))
-  z_motion = policy.encode(goal).detach()
-  kp_goal = mask_keypoint_goal(
-    kp_norm(keypoint_features(state, goal_ref, jitter)), point_mask, frame_mask
+  """`imagine_step` with the action from the human encoder: the arguments after
+  `noise` are the bool masks `point_mask` [B, 24], `frame_mask` [B, K] and
+  `heading_mask` [B], the target jitter [B, K, 24, 6]
+  (`human_jitter_window[:, t : t + K]`) and the human poses `human_win`
+  [B, K, 24, 7] of the K frames of `goal_ref` (`human_window[:, t : t + K]`). The
+  heading block reads the full torso orientation of `state` (the imagined state,
+  world frame) against the clean human anchor (`heading_features`), through
+  `heading_norm` and then the masks, as `act_human`. The goal stored for the critic
+  is the full motion goal; `latent_err` [B] is the squared distance of z_h to the
+  motion encoder's latent of that goal, a stop-gradient target, and `action_err` [B]
+  the mean squared gap of the student's action to the decoder's action on the motion
+  latent (the teacher, detached), both on the detached observation history (one
+  extra decoder pass). `anchor` is the motion goal's (`goal_features`).
+
+  `student` "copy" detaches `state` and `obs_hist` first (no gradient between steps;
+  the world model still steps them with the student's action, detached, so autograd
+  keeps no world-model graph and the stored action, rewards and states carry none).
+  "return" detaches nothing on the action that drives the world model: the return
+  term flows through the dynamics. The copy term never does (detached history), so it
+  only matches the teacher at the states the student reaches; the latent pull keeps
+  its path through the heading block (the imagined torso orientation), as v2's pull
+  did. "direct" (the direct human policy) detaches nothing as "return" but has no
+  teacher: the motion encoder is not called, `latent_err` and `action_err` are zeros,
+  and `recon_err` [B] is the mean squared error of `policy.reconstruct(z_r)` to the
+  stored goal (detached), z_r being z_h with the heading block built from the
+  detached torso orientation (one more human-encoder pass), so the term trains the
+  human encoder and the head only, never the decoder or the dynamics path. The unit the trainer compiles for the human step."""
+  if student == "copy":
+    state, obs_hist = state.detach(), obs_hist.detach()
+  elif student not in ("return", "direct"):
+    raise ValueError(
+      f"Expected student 'copy', 'return' or 'direct', got {student!r}."
+    )
+  goal = goal_norm(goal_features(state, goal_ref, anchor))
+  z_motion = None if student == "direct" else policy.encode(goal).detach()
+  human_quat = human_win[..., 3:]
+  feats = human_features(human_win[..., :3], human_quat, point_mask, jitter)
+  robot_quat = anchor_quat(state)
+  heading = heading_norm(heading_features(robot_quat, human_quat, point_mask))
+  feats_n = human_norm(feats)
+  z_h = policy.encode_human(
+    mask_human_goal(feats_n, point_mask, frame_mask, heading, heading_mask)
   )
-  z_kp = policy.encode_kp(kp_goal)
-  action = policy.decoder(z_kp, normalize_history(obs_norm, obs_hist.flatten(1)))
+  hist = normalize_history(obs_norm, obs_hist.flatten(1))
+  action = policy.decoder(z_h, hist)
+  if z_motion is None:  # direct: no teacher, the reconstruction error instead
+    # The latent of the reconstruction reads a detached torso orientation: through
+    # the live heading the term would push the imagined torso (and, through the
+    # dynamics, earlier actions and the decoder) toward a better reconstruction.
+    heading_sg = heading_norm(
+      heading_features(robot_quat.detach(), human_quat, point_mask)
+    )
+    z_r = policy.encode_human(
+      mask_human_goal(feats_n, point_mask, frame_mask, heading_sg, heading_mask)
+    )
+    recon_err = ((policy.reconstruct(z_r) - goal.detach()) ** 2).mean(-1)
+    return _transition(
+      wm, state, goal, action, obs_hist, prev_action, survival, goal_ref, ctx, noise,
+      recon_err=recon_err,
+    )
+  # The copy gap on a detached history: it matches the teacher at the states the
+  # student reaches and sends no gradient into earlier actions.
+  hist_fixed = hist.detach()
+  a_teacher = policy.decoder(z_motion, hist_fixed).detach()
+  action_err = ((policy.decoder(z_h, hist_fixed) - a_teacher) ** 2).mean(-1)
+  if student == "copy":
+    action = action.detach()
   return _transition(
     wm,
     state,
@@ -348,13 +472,14 @@ def imagine_step_kp(
     goal_ref,
     ctx,
     noise,
-    latent_err=((z_kp - z_motion) ** 2).sum(-1),
+    latent_err=((z_h - z_motion) ** 2).sum(-1),
+    action_err=action_err,
   )
 
 
 def finish_rollout(
   wm: WorldModel,
-  critic: Critic,
+  critic: Critic | None,
   goal_norm: RunningNormalizer,
   state0: Tensor,
   steps: list[ImaginedStep],
@@ -362,12 +487,15 @@ def finish_rollout(
   ctx: Tensor,
   trunc_mask: Tensor,
   bootstrap: Tensor | None = None,
+  *,
+  anchor: GoalAnchor = "reference",
 ) -> ImaginedRollout:
   """`ImaginedRollout` of the H `steps` from ŝ_0 = `state0`: the goal g_H (from
   `last_goal_ref` = ref_H .. ref_{H+K-1}), the local features of ŝ_0 .. ŝ_H and the
-  critic values V_0 .. V_H. The second unit the trainer compiles."""
+  critic values V_0 .. V_H (zeros with `critic` None: the copy student); g_H in the
+  `anchor` frame (`goal_features`). The second unit the trainer compiles."""
   states = torch.stack([state0] + [s.next_state for s in steps], dim=1)
-  goal_h = goal_norm(goal_features(steps[-1].next_state, last_goal_ref))
+  goal_h = goal_norm(goal_features(steps[-1].next_state, last_goal_ref, anchor))
   goals = torch.stack([s.goal for s in steps] + [goal_h], dim=1)
   priv_h = critic_anchor_pos(steps[-1].next_state, last_goal_ref)
   priv = torch.stack([s.priv for s in steps] + [priv_h], dim=1)
@@ -375,12 +503,15 @@ def finish_rollout(
   b, length = states.shape[:2]
   local = wm.local_features(states)
   ctx_in = wm.scale_ctx(ctx)
-  values = critic(
-    local.flatten(0, 1),
-    goals.flatten(0, 1),
-    ctx_in.unsqueeze(1).expand(-1, length, -1).flatten(0, 1),
-    priv.flatten(0, 1),
-  ).view(b, length)
+  if critic is None:
+    values = local.new_zeros(b, length)
+  else:
+    values = critic(
+      local.flatten(0, 1),
+      goals.flatten(0, 1),
+      ctx_in.unsqueeze(1).expand(-1, length, -1).flatten(0, 1),
+      priv.flatten(0, 1),
+    ).view(b, length)
   return ImaginedRollout(
     states=states,
     actions=torch.stack([s.action for s in steps], dim=1),
@@ -394,21 +525,23 @@ def finish_rollout(
     ctx=ctx_in,
     trunc_mask=trunc_mask,
     latent_err=torch.stack([s.latent_err for s in steps], dim=1),
+    action_err=torch.stack([s.action_err for s in steps], dim=1),
     bootstrap=bootstrap,
+    recon_err=torch.stack([s.recon_err for s in steps], dim=1),
   )
 
 
-def kp_jitter_window(
+def human_jitter_window(
   start: StartBatch, cfg: ImaginationCfg, half: dict[str, float] | None = None
 ) -> Tensor:
-  """Target jitter of one keypoint rollout [B, H + K, 5, 6] (`keypoint_jitter`): entry
-  j for the reference frame of `reference_window` entry j, so step t's actor sees
+  """Target jitter of one human rollout [B, H + K, 24, 6] (`human_jitter`): entry j
+  for the reference frame of `reference_window` entry j, so step t's actor sees
   `[:, t : t + K]` and a frame keeps its jitter across the steps whose window contains
-  it. `half` defaults to `cfg.kp_jitter_half`."""
+  it. `half` defaults to `cfg.human_jitter_half`."""
   if half is None:
-    half = cfg.kp_jitter_half
+    half = cfg.human_jitter_half
   b = start.state.shape[0]
-  return keypoint_jitter((b, cfg.horizon + GOAL_K), half, start.state.device)
+  return human_jitter((b, cfg.horizon + GOAL_K), half, start.state.device)
 
 
 def imagine_rollout(
@@ -428,20 +561,22 @@ def imagine_rollout(
   """The rollout of `imagine` with the given sensor noise [B, hist_len + H, 93]
   (`imagination_noise`); the caller freezes `wm` and `critic` (`frozen`).
 
-  `step` and `finish` are `imagine_step` and `finish_rollout` with these networks
-  (default) or compiled versions of them (`imagine_step_kp` for the keypoint rollout).
+  `step` and `finish` are `imagine_step` and `finish_rollout` with these networks and
+  `cfg.goal_anchor` (default) or compiled versions of them (`imagine_step_human` for the human rollout).
   Every step gets inputs of the same shapes and strides, so a compiled step is not
   recompiled per step (it is compiled twice: step 0's inputs need no grad).
 
   `extras(t)` are further positional arguments of step t, after the noise (default
-  none); the keypoint rollout passes `(point_mask, frame_mask, jitter[:, t : t + K])`."""
+  none); the human rollout passes `(point_mask, frame_mask, jitter[:, t : t + K],
+  human_win[:, t : t + K])`."""
   horizon, k = cfg.horizon, GOAL_K
   b, hist_len = start.obs_hist.shape[:2]
   device = start.state.device
+  kw = anchor_kwargs(cfg.goal_anchor)
   if step is None:
-    step = functools.partial(imagine_step, wm, policy, obs_norm, goal_norm)
+    step = functools.partial(imagine_step, wm, policy, obs_norm, goal_norm, **kw)
   if finish is None:
-    finish = functools.partial(finish_rollout, wm, critic, goal_norm)
+    finish = functools.partial(finish_rollout, wm, critic, goal_norm, **kw)
   window = reference_window(library, start.frame, horizon + k)
   num_rewarded = (library.remaining(start.frame) + 1).clamp(max=horizon)
   trunc_mask = torch.arange(horizon, device=device) < num_rewarded.unsqueeze(-1)
@@ -475,16 +610,10 @@ def imagine_rollout(
   )
 
 
-def policy_objective(
-  ro: ImaginedRollout, cfg: ImaginationCfg, align_weight: float = 0.0
-) -> Tensor:
+def policy_objective(ro: ImaginedRollout, cfg: ImaginationCfg) -> Tensor:
   """Policy loss -J (Eq. 2 with truncation): the negative batch mean of the
   survival-weighted discounted rewards of the T_b rewarded steps plus
-  γ^{T_b} ĉ_{T_b} V_{T_b}.
-
-  With `align_weight` > 0 (keypoint step) it adds `align_weight` times the mean of
-  `ro.latent_err` over the rewarded steps, max(#rewarded, 1) in the denominator;
-  steps at t >= T_b are dropped with `torch.where` (as the rewards)."""
+  γ^{T_b} ĉ_{T_b} V_{T_b}."""
   horizon = ro.rewards.shape[1]
   discount = cfg.gamma ** torch.arange(
     horizon + 1, device=ro.rewards.device, dtype=ro.rewards.dtype
@@ -497,13 +626,83 @@ def policy_objective(
   ).squeeze(-1)
   if ro.bootstrap is not None:
     bootstrap = bootstrap * ro.bootstrap
-  loss = -(ret + bootstrap).mean()
-  if align_weight == 0.0:
-    return loss
-  align = torch.where(ro.trunc_mask, ro.latent_err, 0.0).sum() / (
-    ro.trunc_mask.sum().clamp(min=1)
+  return -(ret + bootstrap).mean()
+
+
+def student_objective(
+  ro: ImaginedRollout,
+  cfg: ImaginationCfg,
+  student: Literal["copy", "return", "direct"],
+  action_weight: float,
+  align_weight: float,
+  scales: dict[str, Tensor] | None,
+  recon_weight: float = 1.0,
+) -> tuple[Tensor, dict[str, Tensor]]:
+  """Human-student loss and its raw terms (detached). The terms: "return" = -J
+  (`policy_objective`; the return and direct students), "copy" = the mean of
+  `ro.action_err` and "align" = the mean of `ro.latent_err` over the rewarded steps
+  (`trunc_mask`, max(#rewarded, 1) in the denominator; steps at t >= T_b are dropped
+  with `torch.where`; copy and return students), "recon" = the mean of `ro.recon_err`
+  likewise (the direct student only). The loss is the sum of weight x term / scale,
+  with the weights 1, `action_weight`, `align_weight` and `recon_weight` and the
+  `scales` (`TermScales.scales`; None divides by 1)."""
+  count = ro.trunc_mask.sum().clamp(min=1)
+  if student == "direct":
+    terms = {
+      "return": policy_objective(ro, cfg),
+      "recon": torch.where(ro.trunc_mask, ro.recon_err, 0.0).sum() / count,
+    }
+  else:
+    terms = {
+      "copy": torch.where(ro.trunc_mask, ro.action_err, 0.0).sum() / count,
+      "align": torch.where(ro.trunc_mask, ro.latent_err, 0.0).sum() / count,
+    }
+  if student == "return":
+    terms = {"return": policy_objective(ro, cfg), **terms}
+  weights = {
+    "return": 1.0, "copy": action_weight, "align": align_weight, "recon": recon_weight
+  }
+  loss = sum(
+    weights[name] * term / (1.0 if scales is None else scales[name])
+    for name, term in terms.items()
   )
-  return loss + align_weight * align
+  return loss, {name: term.detach() for name, term in terms.items()}
+
+
+class TermScales(nn.Module):
+  """Running scale of each loss term `names`: an exponential average (`decay`) of the
+  term's absolute value, started at the first value seen and floored at `floor`. A
+  term not yet seen reads 1.0, so the first loss is the raw term. Buffers `scale` and
+  `seen`, so the scales move with `.to` and save with `state_dict`."""
+
+  def __init__(
+    self, names: tuple[str, ...], decay: float = 0.99, floor: float = 1e-6
+  ) -> None:
+    super().__init__()
+    self.names = names
+    self.decay = decay
+    self.floor = floor
+    self.register_buffer("scale", torch.zeros(len(names)))
+    self.register_buffer("seen", torch.zeros(len(names), dtype=torch.bool))
+
+  def scales(self) -> dict[str, Tensor]:
+    """The current scale of every term (detached)."""
+    value = torch.where(self.seen, self.scale.clamp(min=self.floor), 1.0)
+    return {name: value[i] for i, name in enumerate(self.names)}
+
+  @torch.no_grad()
+  def update(self, terms: dict[str, Tensor]) -> None:
+    """Folds the absolute value of each of `terms` into its scale. A non-finite value
+    is skipped (it would poison the scale, and so every later loss)."""
+    for name, term in terms.items():
+      i = self.names.index(name)
+      size = term.detach().abs().to(self.scale.dtype)
+      mixed = self.decay * self.scale[i] + (1.0 - self.decay) * size
+      finite = torch.isfinite(size)
+      self.scale[i] = torch.where(
+        finite, torch.where(self.seen[i], mixed, size), self.scale[i]
+      )
+      self.seen[i] = self.seen[i] | finite
 
 
 @torch.no_grad()
