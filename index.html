@@ -234,6 +234,14 @@
     }
     .affiliations { font-size: 1rem !important; margin-top: 0.35rem; }
     .equal-note { font-size: 0.85rem; color: #e5e7eb; margin-top: 0.2rem; }
+    /* Release note under the header buttons */
+    .release-note {
+      display: inline-block; max-width: 44rem; margin: 1.1rem auto 0; padding: 0.55rem 1rem;
+      border-radius: 10px; background: rgba(17,24,39,0.72); border: 1px solid rgba(255,108,12,0.55);
+      color: #f3f4f6; font-size: 0.95rem; line-height: 1.45;
+    }
+    .release-note strong { color: #FF6C0C; margin-right: 0.3rem; }
+    .release-note a { color: #FF6C0C; font-weight: 600; }
     /* Institution logos */
     .institution-logos {
       display: inline-flex;
@@ -381,6 +389,14 @@
                   </a>
                 </span>
               </div>
+              <p class="release-note">
+                <strong>v0.1 &middot; Oct 29, 2026</strong>
+                Code and a pretrained policy for the G1, X2 Ultra and T2. New: a human interface that
+                follows a PICO headset's body tracking directly, a held actuator delay in training for
+                hardware latency, teleop on the G1's own computer, and updated X2 Ultra and T2 models.
+                The simulations on this page run this policy.
+                <a href="https://github.com/lzyang2000/morphmimic/releases/tag/v0.1" target="_blank" rel="noopener">Release notes</a>
+              </p>
             </div>
           </div>
         </div>
@@ -401,8 +417,8 @@
             <source src="static/videos/dance_hiphop_shuffle_sequence_v_001_R_003__A306.mp4" type="video/mp4">
           </video>
           <p class="video-caption has-text-centered">
-            The Unitree G1, AgiBot X2 Ultra and Booster T2 (left to right) dance a street shuffle with one
-            shared policy. Simulated in MuJoCo with unified_v2 at iteration 76,000.
+            The AgiBot X2 Ultra, Unitree G1 and Booster T2 (left to right) dance a street shuffle with one
+            shared policy. Simulated in MuJoCo with the released v0.1 policy.
           </p>
         </div>
       </div>
@@ -426,7 +442,7 @@
               <i class="fas fa-play"></i> Launch the demo
             </span>
             <span class="demo-headline">Three robots and one policy, running live</span>
-            <span class="demo-sub">About 90&nbsp;MB loads when you click. Needs WebGL.</span>
+            <span class="demo-sub">About 70&nbsp;MB loads when you click. Needs WebGL.</span>
           </button>
         </div>
 
@@ -444,7 +460,7 @@
         </div>
 
         <p class="demo-note">
-          The shared policy runs live in your browser (about 90&nbsp;MB on first load). Drag a robot to push it.
+          The shared policy runs live in your browser (about 70&nbsp;MB on first load). Drag a robot to push it.
         </p>
       </div>
     </div>
@@ -653,8 +669,8 @@
         <h3 class="title is-4" style="margin-top:2.5rem;">Ten clips in simulation</h3>
         <div class="content has-text-justified">
           <p>
-            The G1, X2 Ultra and T2 (left to right) track each clip through the full-motion interface.
-            Simulated in MuJoCo with unified_v2 at iteration 76,000. The results above are the paper's, at 40,000 iterations.
+            The X2 Ultra, G1 and T2 (left to right) track each clip through the full-motion interface.
+            Simulated in MuJoCo with the released v0.1 policy. The results above are the paper's, at 40,000 iterations.
           </p>
         </div>
         <div class="clip-grid" id="clipGrid">

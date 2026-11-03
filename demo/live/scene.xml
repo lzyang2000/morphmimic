@@ -84,7 +84,7 @@
 
   <worldbody>
     <geom name="floor" size="0 0 0.01" type="plane" contype="14" conaffinity="14"/>
-    <body name="g1/robot/pelvis" childclass="g1/robot/g1" pos="0 -1.5 0.793">
+    <body name="g1/robot/pelvis" childclass="g1/robot/g1" pos="0 0 0.793">
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813" diaginertia="0.010549 0.0093089 0.0079184"/>
       <joint name="g1/robot/floating_base_joint" type="free"/>
       <geom name="g1/robot/pelvis_collision" class="g1/robot/collision" size="0.07" pos="0 0 -0.08" type="sphere" contype="2" conaffinity="2" condim="1"/>
@@ -243,34 +243,34 @@
         </body>
       </body>
     </body>
-    <body name="x2/robot/pelvis" childclass="x2/robot/x2_ultra" pos="0 0 0.68">
+    <body name="x2/robot/pelvis" childclass="x2/robot/x2_ultra" pos="0 -1.5 0.68">
       <inertial pos="-0.00152667 0.000129329 0.00289836" quat="0.665469 0.664925 0.239473 -0.240165" mass="5.03181" diaginertia="0.0138553 0.0132442 0.0107621"/>
       <joint name="x2/robot/floating_base_joint" type="free" armature="0" frictionloss="0"/>
       <geom name="x2/robot/pelvis_collision" class="x2/robot/collision" pos="-0.00152667 0.000129329 0.00289836" quat="0.665469 0.664925 0.239473 -0.240165" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/pelvis"/>
       <site name="x2/robot/imu_0" pos="0.0239465 -0.000228682 0.04171" group="3"/>
       <body name="x2/robot/left_hip_pitch_link" pos="0 0.07135 0">
         <inertial pos="0.00791 0.064136 0.000116" quat="0.70601 0.705897 0.0403038 0.0404307" mass="1.39968" diaginertia="0.00807979 0.007409 0.00155421"/>
-        <joint name="x2/robot/left_hip_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.704 2.556" actuatorfrcrange="-120 120" armature="0.0290798"/>
+        <joint name="x2/robot/left_hip_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.704 2.556" actuatorfrcrange="-120 120"/>
         <geom name="x2/robot/left_hip_pitch_link_collision" class="x2/robot/collision" pos="0.0004429 0.0641393 8.23108e-06" quat="0.709509 0.704681 -0.00325779 -0.00323446" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/left_hip_pitch_link"/>
         <body name="x2/robot/left_hip_roll_link" pos="-0.000575 0.0657 0">
           <inertial pos="4.7e-05 0.000231 -0.093505" quat="0.703892 0.00104942 0.00203424 0.710303" mass="1.5848" diaginertia="0.0181021 0.0176713 0.00251468"/>
-          <joint name="x2/robot/left_hip_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.235 2.906" actuatorfrcrange="-120 120" armature="0.0290798"/>
+          <joint name="x2/robot/left_hip_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.235 2.906" actuatorfrcrange="-120 120"/>
           <geom name="x2/robot/left_hip_roll_link_collision" class="x2/robot/collision" pos="0.000311555 0.000836359 -0.0691693" quat="0.706975 -0.00390105 -0.000990465 0.707227" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/col_left_hip_roll_link"/>
           <body name="x2/robot/left_hip_yaw_link" pos="0.000575 0 -0.13685">
             <inertial pos="-0.002375 0.003914 -0.144276" quat="0.647266 -0.0202222 0.00175224 0.761994" mass="2.01055" diaginertia="0.0526993 0.0519961 0.0023845"/>
-            <joint name="x2/robot/left_hip_yaw_joint" pos="0 0 0" axis="0 0 1" range="-1.684 3.43" actuatorfrcrange="-120 120" armature="0.0290798"/>
+            <joint name="x2/robot/left_hip_yaw_joint" pos="0 0 0" axis="0 0 1" range="-1.684 3.43" actuatorfrcrange="-120 120"/>
             <geom name="x2/robot/left_hip_yaw_link_collision" class="x2/robot/collision" pos="0.00119093 -0.000944189 -0.126233" quat="0.705604 0.0288852 0.0366324 0.70707" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/left_hip_yaw_link"/>
             <body name="x2/robot/left_knee_link" pos="-0.00766 0.000225 -0.1831">
               <inertial pos="-0.002655 0.003681 -0.122697" quat="0.437302 -0.00633388 0.00636434 0.89927" mass="1.56821" diaginertia="0.031041 0.0309424 0.00193262"/>
-              <joint name="x2/robot/left_knee_joint" pos="0 0 0" axis="0 1 0" range="0 2.4073" actuatorfrcrange="-120 120" armature="0.0290798"/>
+              <joint name="x2/robot/left_knee_joint" pos="0 0 0" axis="0 1 0" range="0 2.4073" actuatorfrcrange="-120 120"/>
               <geom name="x2/robot/left_knee_link_collision" class="x2/robot/collision" pos="0.00032226 0.00131759 -0.104882" quat="0.999844 -0.0130183 0.0102908 0.00598027" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/left_knee_link"/>
               <body name="x2/robot/left_ankle_pitch_link" pos="-0.01 -0.000124911 -0.282">
                 <inertial pos="0.011691 -0.000181 0.003548" quat="0.72346 -0.0457688 0.0674454 0.685537" mass="0.747802" diaginertia="0.00117429 0.000984841 0.000709871"/>
-                <joint name="x2/robot/left_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.803 0.453" actuatorfrcrange="-36 36" armature="0.00884"/>
+                <joint name="x2/robot/left_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.803 0.453" actuatorfrcrange="-36 36"/>
                 <geom name="x2/robot/left_ankle_pitch_link_collision" class="x2/robot/collision" pos="0.00254421 4.66105e-05 -4.06382e-05" quat="-0.0424497 0.707279 -0.0378247 0.704644" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/left_ankle_pitch_link"/>
                 <body name="x2/robot/left_ankle_roll_link" pos="-0.00175 0 0">
                   <inertial pos="0.035428 2.5e-05 -0.049572" quat="0.614657 0.350346 0.350824 0.613496" mass="1.01617" diaginertia="0.007937 0.0068711 0.0025949"/>
-                  <joint name="x2/robot/left_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.262 0.262" actuatorfrcrange="-24 24" armature="0.00313299"/>
+                  <joint name="x2/robot/left_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.262 0.262" actuatorfrcrange="-24 24"/>
                   <geom name="x2/robot/left_foot1_collision" class="x2/robot/foot_capsule" pos="-0.05 0.05 -0.068" contype="4" conaffinity="4" priority="1" friction="0.6" rgba="1 0.5 0 1"/>
                   <geom name="x2/robot/left_foot2_collision" class="x2/robot/foot_capsule" pos="-0.065 0.025 -0.068" contype="4" conaffinity="4" priority="1" friction="0.6" rgba="1 0.5 0 1"/>
                   <geom name="x2/robot/left_foot3_collision" class="x2/robot/foot_capsule" pos="-0.05 -0.05 -0.068" contype="4" conaffinity="4" priority="1" friction="0.6" rgba="1 0.5 0 1"/>
@@ -296,27 +296,27 @@
       </body>
       <body name="x2/robot/right_hip_pitch_link" pos="0 -0.07135 0">
         <inertial pos="0.007909 -0.064114 0.000131" quat="0.705894 0.706007 -0.0404833 -0.0403565" mass="1.40023" diaginertia="0.00808102 0.007409 0.00155498"/>
-        <joint name="x2/robot/right_hip_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.704 2.556" actuatorfrcrange="-120 120" armature="0.0290798"/>
+        <joint name="x2/robot/right_hip_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.704 2.556" actuatorfrcrange="-120 120"/>
         <geom name="x2/robot/right_hip_pitch_link_collision" class="x2/robot/collision" pos="-0.00290041 -0.063754 -9.88107e-06" quat="0.710072 0.704128 -0.000761507 -0.000793181" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/right_hip_pitch_link"/>
         <body name="x2/robot/right_hip_roll_link" pos="0 -0.0657 0">
           <inertial pos="-0.000586 -0.000228 -0.093568" quat="0.710476 -8.90189e-06 -0.00101098 0.703721" mass="1.58508" diaginertia="0.0181161 0.017694 0.00251594"/>
-          <joint name="x2/robot/right_hip_roll_joint" pos="0 0 0" axis="1 0 0" range="-2.906 0.235" actuatorfrcrange="-120 120" armature="0.0290798"/>
+          <joint name="x2/robot/right_hip_roll_joint" pos="0 0 0" axis="1 0 0" range="-2.906 0.235" actuatorfrcrange="-120 120"/>
           <geom name="x2/robot/right_hip_roll_link_collision" class="x2/robot/collision" pos="-0.000267047 -0.000843206 -0.0691683" quat="0.707314 -0.000968903 -0.00400203 0.706887" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/col_right_hip_roll_link"/>
           <body name="x2/robot/right_hip_yaw_link" pos="0 0 -0.13685">
             <inertial pos="-0.002444 -0.003935 -0.144335" quat="0.762367 0.00171388 -0.0204012 0.646821" mass="2.00262" diaginertia="0.0525579 0.0518558 0.0023773"/>
-            <joint name="x2/robot/right_hip_yaw_joint" pos="0 0 0" axis="0 0 1" range="-3.43 1.684" actuatorfrcrange="-120 120" armature="0.0290798"/>
+            <joint name="x2/robot/right_hip_yaw_joint" pos="0 0 0" axis="0 0 1" range="-3.43 1.684" actuatorfrcrange="-120 120"/>
             <geom name="x2/robot/right_hip_yaw_link_collision" class="x2/robot/collision" pos="0.00119058 0.000944197 -0.12622" quat="0.707027 0.0366273 0.0288926 0.705647" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/right_hip_yaw_link"/>
             <body name="x2/robot/right_knee_link" pos="-0.00766 -0.000225 -0.1831">
               <inertial pos="-0.002699 -0.003794 -0.122288" quat="0.90334 0.0065752 -0.00663139 0.428824" mass="1.56588" diaginertia="0.0308703 0.0307718 0.00192491"/>
-              <joint name="x2/robot/right_knee_joint" pos="0 0 0" axis="0 1 0" range="0 2.4073" actuatorfrcrange="-120 120" armature="0.0290798"/>
+              <joint name="x2/robot/right_knee_joint" pos="0 0 0" axis="0 1 0" range="0 2.4073" actuatorfrcrange="-120 120"/>
               <geom name="x2/robot/right_knee_link_collision" class="x2/robot/collision" pos="0.000322216 -0.00135505 -0.104872" quat="0.999859 0.0124869 0.0102702 -0.00456102" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/right_knee_link"/>
               <body name="x2/robot/right_ankle_pitch_link" pos="-0.01 0.000124911 -0.282">
                 <inertial pos="0.011665 0.000937 0.00394" quat="0.7183 0.0624712 -0.034146 0.692081" mass="0.749566" diaginertia="0.00122381 0.00103716 0.000713034"/>
-                <joint name="x2/robot/right_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.803 0.453" actuatorfrcrange="-36 36" armature="0.00884"/>
+                <joint name="x2/robot/right_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.803 0.453" actuatorfrcrange="-36 36"/>
                 <geom name="x2/robot/right_ankle_pitch_link_collision" class="x2/robot/collision" pos="0.00254421 4.66105e-05 -4.06382e-05" quat="-0.0424497 0.707279 -0.0378247 0.704644" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/right_ankle_pitch_link"/>
                 <body name="x2/robot/right_ankle_roll_link" pos="-0.00175 0 0">
                   <inertial pos="0.035428 2.5e-05 -0.049572" quat="0.614657 0.350346 0.350824 0.613496" mass="1.01617" diaginertia="0.007937 0.0068711 0.0025949"/>
-                  <joint name="x2/robot/right_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2625 0.2625" actuatorfrcrange="-24 24" armature="0.00313299"/>
+                  <joint name="x2/robot/right_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2625 0.2625" actuatorfrcrange="-24 24"/>
                   <geom name="x2/robot/right_foot1_collision" class="x2/robot/foot_capsule" pos="-0.05 0.05 -0.068" contype="4" conaffinity="4" priority="1" friction="0.6" rgba="1 0.5 0 1"/>
                   <geom name="x2/robot/right_foot2_collision" class="x2/robot/foot_capsule" pos="-0.065 0.025 -0.068" contype="4" conaffinity="4" priority="1" friction="0.6" rgba="1 0.5 0 1"/>
                   <geom name="x2/robot/right_foot3_collision" class="x2/robot/foot_capsule" pos="-0.05 -0.05 -0.068" contype="4" conaffinity="4" priority="1" friction="0.6" rgba="1 0.5 0 1"/>
@@ -342,41 +342,41 @@
       </body>
       <body name="x2/robot/waist_yaw_link" pos="0 0 0.06706">
         <inertial pos="-0.001359 4.7e-05 0.041703" quat="0.99876 0.000921559 0.0477625 0.0140034" mass="1.66854" diaginertia="0.00503206 0.00499998 0.00283196"/>
-        <joint name="x2/robot/waist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-3.43 2.382" actuatorfrcrange="-120 120" armature="0.0290798"/>
+        <joint name="x2/robot/waist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-3.43 2.382" actuatorfrcrange="-120 120"/>
         <body name="x2/robot/waist_pitch_link" pos="0 0 0.0880106">
           <inertial pos="0.008967 -1e-06 0" quat="0.5 0.5 -0.5 0.5" mass="0.392413" diaginertia="0.00023 0.000133 0.000133"/>
-          <joint name="x2/robot/waist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.314 0.314" actuatorfrcrange="-48 48" armature="0.00313299"/>
+          <joint name="x2/robot/waist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.314 0.314" actuatorfrcrange="-48 48"/>
           <body name="x2/robot/torso_link">
             <inertial pos="-0.000188 0.000605 0.191827" quat="0.999959 0.00110321 0.0081892 0.00362262" mass="10.1441" diaginertia="0.479863 0.455999 0.0666413"/>
-            <joint name="x2/robot/waist_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.488 0.488" actuatorfrcrange="-48 48" armature="0.00313299"/>
+            <joint name="x2/robot/waist_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.488 0.488" actuatorfrcrange="-48 48"/>
             <geom name="x2/robot/torso_link_collision" class="x2/robot/collision" pos="-0.0164474 1.36564e-05 0.201849" quat="0.981737 0.000899706 -0.190242 0.00072522" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/torso_link"/>
             <site name="x2/robot/imu_1" pos="-0.0248787 0.00198528 0.105938" group="3"/>
             <body name="x2/robot/left_shoulder_pitch_link" pos="0.00329907 0.143032 0.241648" quat="0.994522 0.104528 0 0">
               <inertial pos="0.003007 0.050014 6.2e-05" quat="0.707145 0.706403 0.027325 0.0139105" mass="0.885896" diaginertia="0.00303104 0.00292896 0.000676999"/>
-              <joint name="x2/robot/left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.08 2.04" actuatorfrcrange="-36 36" armature="0.00884" frictionloss="0"/>
+              <joint name="x2/robot/left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.08 2.04" actuatorfrcrange="-36 36"/>
               <geom name="x2/robot/left_shoulder_pitch_link_collision" class="x2/robot/collision" pos="-0.00245701 0.0487809 6.82509e-05" quat="0.800813 0.597962 -0.0254392 -0.022192" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/left_shoulder_pitch_link"/>
               <body name="x2/robot/left_shoulder_roll_link" pos="-0.000499991 0.0495 0">
                 <inertial pos="0.000621 -0.000183 -0.078842" quat="0.706401 0.00587444 0.00386922 0.707777" mass="0.706556" diaginertia="0.00549904 0.00540092 0.000539037"/>
-                <joint name="x2/robot/left_shoulder_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.061 2.993" actuatorfrcrange="-36 36" armature="0.00884" frictionloss="0"/>
+                <joint name="x2/robot/left_shoulder_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.061 2.993" actuatorfrcrange="-36 36"/>
                 <geom name="x2/robot/left_shoulder_roll_link_collision" class="x2/robot/collision" pos="7.36144e-05 -6.80208e-05 -0.0463377" quat="0.706847 -0.014247 -0.0109947 0.707137" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/left_shoulder_roll_link"/>
                 <body name="x2/robot/left_shoulder_yaw_link" pos="0.00122424 0 -0.121195" quat="0.999996 0 -0.00298782 0">
                   <inertial pos="0.010005 0.000179 -0.069477" quat="0.996444 0.00144278 0.0782236 0.0312643" mass="0.704662" diaginertia="0.00438693 0.00436694 0.00044713"/>
-                  <joint name="x2/robot/left_shoulder_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24" armature="0.00313299" frictionloss="0"/>
+                  <joint name="x2/robot/left_shoulder_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24"/>
                   <geom name="x2/robot/left_shoulder_yaw_link_collision" class="x2/robot/collision" pos="0.00358629 -0.00168361 -0.0514746" quat="0.99131 -0.0371581 -0.118241 0.0440734" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/left_shoulder_yaw_link"/>
                   <body name="x2/robot/left_elbow_link" pos="0.014 0.000199986 -0.08295" quat="0.999996 0 0.00298782 0">
                     <inertial pos="-0.013174 0.003788 -0.080203" quat="0.970868 0.0083727 -0.0764035 -0.226955" mass="0.688008" diaginertia="0.0054008 0.00531735 0.000446844"/>
-                    <joint name="x2/robot/left_elbow_joint" pos="0 0 0" axis="0 1 0" range="-2.3556 0" actuatorfrcrange="-24 24" armature="0.00313299" frictionloss="0"/>
+                    <joint name="x2/robot/left_elbow_joint" pos="0 0 0" axis="0 1 0" range="-2.3556 0" actuatorfrcrange="-24 24"/>
                     <geom name="x2/robot/left_elbow_link_collision" class="x2/robot/collision" pos="-0.0138067 0.00540599 -0.0610044" quat="0.945389 -0.167852 -0.0271513 -0.27808" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/left_elbow_link"/>
                     <body name="x2/robot/left_wrist_yaw_link" pos="-0.0132797 -9.75488e-05 -0.120576">
                       <inertial pos="7.6e-05 0.007263 -0.030679" quat="0.992384 -0.122507 -0.00213896 -0.0126728" mass="0.360708" diaginertia="0.000612057 0.000527003 0.00018794"/>
-                      <joint name="x2/robot/left_wrist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24" armature="0.00313299" frictionloss="0"/>
+                      <joint name="x2/robot/left_wrist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24"/>
                       <body name="x2/robot/left_wrist_pitch_link" pos="0.000490001 0 -0.0819985" quat="0.999996 0 -0.00298783 0">
                         <inertial pos="0.011479 0.002282 0.001703" quat="0.258763 0.693211 0.202262 0.641553" mass="0.292062" diaginertia="0.000178433 0.000138482 9.10855e-05"/>
-                        <joint name="x2/robot/left_wrist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.558 0.558" actuatorfrcrange="-4.8 4.8" frictionloss="0"/>
+                        <joint name="x2/robot/left_wrist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.558 0.558" actuatorfrcrange="-4.8 4.8"/>
                         <geom name="x2/robot/left_wrist_pitch_link_collision" class="x2/robot/collision" pos="0.000454766 -0.000156091 6.9981e-06" quat="0.00102174 0.709874 0.0141502 0.704185" contype="4" conaffinity="4" condim="1" rgba="0.3 0.3 0.3 1" mesh="x2/robot/left_wrist_pitch_link"/>
                         <body name="x2/robot/left_wrist_roll_link">
                           <inertial pos="0.002935 -0.001499 -0.083026" quat="0.606338 0.022665 0.0055862 0.794865" mass="0.30304" diaginertia="0.00278114 0.00266331 0.000205545"/>
-                          <joint name="x2/robot/left_wrist_roll_joint" pos="0 0 0" axis="1 0 0" range="-1.571 0.724" actuatorfrcrange="-4.8 4.8" frictionloss="0"/>
+                          <joint name="x2/robot/left_wrist_roll_joint" pos="0 0 0" axis="1 0 0" range="-1.571 0.724" actuatorfrcrange="-4.8 4.8"/>
                           <geom name="x2/robot/left_wrist_roll_link_collision" class="x2/robot/collision" pos="0.00259257 -0.00168498 -0.0754045" quat="0.769668 -0.0255865 0.00789257 0.637883" contype="4" conaffinity="4" condim="1" rgba="0.898039 0.917647 0.929412 1" mesh="x2/robot/left_wrist_roll_link"/>
                         </body>
                       </body>
@@ -387,30 +387,30 @@
             </body>
             <body name="x2/robot/right_shoulder_pitch_link" pos="0.00330094 -0.143031 0.241648" quat="0.994522 -0.10453 0 0">
               <inertial pos="0.002721 -0.050304 3.4e-05" quat="0.706743 0.706967 -0.0144448 -0.0224265" mass="0.885544" diaginertia="0.00303743 0.00294899 0.00067458"/>
-              <joint name="x2/robot/right_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.08 2.04" actuatorfrcrange="-36 36" armature="0.00884" frictionloss="0"/>
+              <joint name="x2/robot/right_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.08 2.04" actuatorfrcrange="-36 36"/>
               <geom name="x2/robot/right_shoulder_pitch_link_collision" class="x2/robot/collision" pos="-0.00245277 -0.048779 7.14404e-05" quat="0.597918 0.800872 0.0239523 0.0229025" contype="4" conaffinity="4" condim="1" rgba="0.298039 0.298039 0.298039 1" mesh="x2/robot/right_shoulder_pitch_link"/>
               <body name="x2/robot/right_shoulder_roll_link" pos="-0.0005 -0.0495 0" quat="1 0 7.70015e-05 0">
                 <inertial pos="0.000598 0.000185 -0.079928" quat="0.707532 0.00175816 0.00375761 0.706669" mass="0.696963" diaginertia="0.00548904 0.0054003 0.000529664"/>
-                <joint name="x2/robot/right_shoulder_roll_joint" pos="0 0 0" axis="1 0 0" range="-2.993 0.061" actuatorfrcrange="-36 36" armature="0.00884" frictionloss="0"/>
+                <joint name="x2/robot/right_shoulder_roll_joint" pos="0 0 0" axis="1 0 0" range="-2.993 0.061" actuatorfrcrange="-36 36"/>
                 <geom name="x2/robot/right_shoulder_roll_link_collision" class="x2/robot/collision" pos="-7.65283e-05 6.8969e-05 -0.0463372" quat="0.707169 -0.00851933 -0.0117739 0.706895" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/right_shoulder_roll_link"/>
                 <body name="x2/robot/right_shoulder_yaw_link" pos="0.0005 0 -0.1212">
                   <inertial pos="0.010082 -0.000178 -0.069484" quat="0.996531 -0.00117604 0.0784297 -0.0277917" mass="0.704661" diaginertia="0.00438849 0.00436595 0.000445562"/>
-                  <joint name="x2/robot/right_shoulder_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24" armature="0.00313299" frictionloss="0"/>
+                  <joint name="x2/robot/right_shoulder_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24"/>
                   <geom name="x2/robot/right_shoulder_yaw_link_collision" class="x2/robot/collision" pos="0.0058681 0.00209035 -0.0466972" quat="0.98381 0.03603 -0.151759 0.0882551" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/right_shoulder_yaw_link"/>
                   <body name="x2/robot/right_elbow_link" pos="0.014 -0.0002 -0.08295">
                     <inertial pos="-0.013517 -0.003463 -0.080438" quat="0.973224 -0.00938144 -0.0782816 0.215913" mass="0.687932" diaginertia="0.00542019 0.00534355 0.000444255"/>
-                    <joint name="x2/robot/right_elbow_joint" pos="0 0 0" axis="0 1 0" range="-2.3556 0" actuatorfrcrange="-24 24" armature="0.00313299" frictionloss="0"/>
+                    <joint name="x2/robot/right_elbow_joint" pos="0 0 0" axis="0 1 0" range="-2.3556 0" actuatorfrcrange="-24 24"/>
                     <geom name="x2/robot/right_elbow_link_collision" class="x2/robot/collision" pos="-0.0131524 -0.00541022 -0.0609525" quat="0.947277 0.169411 -0.0225047 0.271033" contype="4" conaffinity="4" condim="1" rgba="1 1 1 1" mesh="x2/robot/right_elbow_link"/>
                     <body name="x2/robot/right_wrist_yaw_link" pos="-0.014 9.75261e-05 -0.120694" quat="1 0 0 1.63671e-05">
                       <inertial pos="0.000153 -0.006979 -0.032069" quat="0.994972 0.0996496 -0.000602255 0.0100452" mass="0.372787" diaginertia="0.00069604 0.000598539 0.000202421"/>
-                      <joint name="x2/robot/right_wrist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24" armature="0.00313299" frictionloss="0"/>
+                      <joint name="x2/robot/right_wrist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.556 2.556" actuatorfrcrange="-24 24"/>
                       <body name="x2/robot/right_wrist_pitch_link" pos="0 0 -0.0818" quat="1 0 0 -1.63671e-05">
                         <inertial pos="0.012092 -0.002544 0.001781" quat="-0.292763 0.682227 -0.235996 0.627027" mass="0.279175" diaginertia="0.000171965 0.00013308 8.19541e-05"/>
-                        <joint name="x2/robot/right_wrist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.558 0.558" actuatorfrcrange="-4.8 4.8" frictionloss="0"/>
+                        <joint name="x2/robot/right_wrist_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.558 0.558" actuatorfrcrange="-4.8 4.8"/>
                         <geom name="x2/robot/right_wrist_pitch_link_collision" class="x2/robot/collision" pos="0.000454077 0.000123743 8.05025e-06" quat="0.0158547 0.709935 0.00564425 0.704067" contype="4" conaffinity="4" condim="1" rgba="0.3 0.3 0.3 1" mesh="x2/robot/right_wrist_pitch_link"/>
                         <body name="x2/robot/right_wrist_roll_link">
                           <inertial pos="0.003056 0.00138 -0.082799" quat="0.794575 0.00682121 0.0232843 0.606681" mass="0.303847" diaginertia="0.002781 0.00266288 0.000206121"/>
-                          <joint name="x2/robot/right_wrist_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.724 1.571" actuatorfrcrange="-4.8 4.8" frictionloss="0"/>
+                          <joint name="x2/robot/right_wrist_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.724 1.571" actuatorfrcrange="-4.8 4.8"/>
                           <geom name="x2/robot/right_wrist_roll_link_collision" class="x2/robot/collision" pos="0.00278063 0.00156675 -0.0753809" quat="0.638025 0.00656601 -0.0261076 0.769545" contype="4" conaffinity="4" condim="1" rgba="0.898039 0.917647 0.929412 1" mesh="x2/robot/right_wrist_roll_link"/>
                         </body>
                       </body>
@@ -421,10 +421,10 @@
             </body>
             <body name="x2/robot/head_yaw_link" pos="0.00834773 0 0.309397">
               <inertial pos="-0.003139 0.001399 0.051838" quat="0.999924 -0.00911422 0.00384341 0.00741605" mass="0.720047" diaginertia="0.0038613 0.00323157 0.00110213"/>
-              <joint name="x2/robot/head_yaw_joint" pos="0 0 0" axis="0 0 1" range="-0.366 0.366" actuatorfrcrange="-2.6 2.6" frictionloss="0"/>
+              <joint name="x2/robot/head_yaw_joint" pos="0 0 0" axis="0 0 1" range="-0.366 0.366" actuatorfrcrange="-2.6 2.6"/>
               <body name="x2/robot/head_pitch_link" pos="0 0 0.0889">
                 <inertial pos="0.003033 -6e-05 0.004395" quat="0.695573 -0.162421 -0.145198 0.684628" mass="0.999287" diaginertia="0.0035988 0.00298179 0.00259841"/>
-                <joint name="x2/robot/head_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.3838 0.3838" actuatorfrcrange="-0.6 0.6" frictionloss="0"/>
+                <joint name="x2/robot/head_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.3838 0.3838" actuatorfrcrange="-0.6 0.6"/>
                 <geom name="x2/robot/head_pitch_link_collision" class="x2/robot/collision" size="0.074 0.05" pos="0 0 0.015" quat="0.499898 0.5 0.5 -0.500102" type="cylinder" contype="4" conaffinity="4" condim="1" rgba="0.498039 0.498039 0.498039 1"/>
                 <site name="x2/robot/imu_2" pos="0.0259999 -8.25389e-05 0.0176" group="3"/>
               </body>
@@ -618,73 +618,73 @@
     <general name="g1/robot/left_wrist_yaw_joint" joint="g1/robot/left_wrist_yaw_joint" ctrllimited="false" ctrlrange="-1.91243 1.91243" forcelimited="true" forcerange="-5 5" biastype="affine" gainprm="16.7783" biasprm="0 -16.7783 -1.06814"/>
     <general name="g1/robot/right_wrist_pitch_joint" joint="g1/robot/right_wrist_pitch_joint" ctrllimited="false" ctrlrange="-1.91243 1.91243" forcelimited="true" forcerange="-5 5" biastype="affine" gainprm="16.7783" biasprm="0 -16.7783 -1.06814"/>
     <general name="g1/robot/right_wrist_yaw_joint" joint="g1/robot/right_wrist_yaw_joint" ctrllimited="false" ctrlrange="-1.91243 1.91243" forcelimited="true" forcerange="-5 5" biastype="affine" gainprm="16.7783" biasprm="0 -16.7783 -1.06814"/>
-    <general name="g1/robot/waist_roll_joint" joint="g1/robot/waist_roll_joint" ctrllimited="false" ctrlrange="-2.27431 2.27431" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
-    <general name="g1/robot/waist_pitch_joint" joint="g1/robot/waist_pitch_joint" ctrllimited="false" ctrlrange="-2.27431 2.27431" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
+    <general name="g1/robot/waist_roll_joint" joint="g1/robot/waist_roll_joint" ctrllimited="false" ctrlrange="-2.27431 2.27431" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -3"/>
+    <general name="g1/robot/waist_pitch_joint" joint="g1/robot/waist_pitch_joint" ctrllimited="false" ctrlrange="-2.27431 2.27431" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -3"/>
     <general name="g1/robot/left_ankle_pitch_joint" joint="g1/robot/left_ankle_pitch_joint" ctrllimited="false" ctrlrange="-2.62698 2.27791" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
     <general name="g1/robot/left_ankle_roll_joint" joint="g1/robot/left_ankle_roll_joint" ctrllimited="false" ctrlrange="-2.01611 2.01611" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
     <general name="g1/robot/right_ankle_pitch_joint" joint="g1/robot/right_ankle_pitch_joint" ctrllimited="false" ctrlrange="-2.62698 2.27791" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
     <general name="g1/robot/right_ankle_roll_joint" joint="g1/robot/right_ankle_roll_joint" ctrllimited="false" ctrlrange="-2.01611 2.01611" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
-    <general name="x2/robot/left_hip_pitch_joint" joint="x2/robot/left_hip_pitch_joint" ctrllimited="false" ctrlrange="-3.74927 3.60127" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/right_hip_pitch_joint" joint="x2/robot/right_hip_pitch_joint" ctrllimited="false" ctrlrange="-3.74927 3.60127" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/left_hip_roll_joint" joint="x2/robot/left_hip_roll_joint" ctrllimited="false" ctrlrange="-1.28027 3.95127" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/right_hip_roll_joint" joint="x2/robot/right_hip_roll_joint" ctrllimited="false" ctrlrange="-3.95127 1.28027" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/left_hip_yaw_joint" joint="x2/robot/left_hip_yaw_joint" ctrllimited="false" ctrlrange="-2.72927 4.47527" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/right_hip_yaw_joint" joint="x2/robot/right_hip_yaw_joint" ctrllimited="false" ctrlrange="-4.47527 2.72927" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/left_knee_joint" joint="x2/robot/left_knee_joint" ctrllimited="false" ctrlrange="-1.04527 3.45257" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/right_knee_joint" joint="x2/robot/right_knee_joint" ctrllimited="false" ctrlrange="-1.04527 3.45257" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="114.802" biasprm="0 -114.802 -7.30855"/>
-    <general name="x2/robot/waist_yaw_joint" joint="x2/robot/waist_yaw_joint" ctrllimited="false" ctrlrange="-9.43 8.382" forcelimited="true" forcerange="-120 120" biastype="affine" gainprm="20" biasprm="0 -20 -4"/>
-    <general name="x2/robot/left_shoulder_pitch_joint" joint="x2/robot/left_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-4.88 3.84" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/right_shoulder_pitch_joint" joint="x2/robot/right_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-4.88 3.84" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/left_shoulder_roll_joint" joint="x2/robot/left_shoulder_roll_joint" ctrllimited="false" ctrlrange="-1.861 4.793" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/right_shoulder_roll_joint" joint="x2/robot/right_shoulder_roll_joint" ctrllimited="false" ctrlrange="-4.793 1.861" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/left_ankle_pitch_joint" joint="x2/robot/left_ankle_pitch_joint" ctrllimited="false" ctrlrange="-1.83455 1.48455" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="34.8989" biasprm="0 -34.8989 -2.22173"/>
-    <general name="x2/robot/right_ankle_pitch_joint" joint="x2/robot/right_ankle_pitch_joint" ctrllimited="false" ctrlrange="-1.83455 1.48455" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="34.8989" biasprm="0 -34.8989 -2.22173"/>
-    <general name="x2/robot/left_shoulder_yaw_joint" joint="x2/robot/left_shoulder_yaw_joint" ctrllimited="false" ctrlrange="-3.756 3.756" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/right_shoulder_yaw_joint" joint="x2/robot/right_shoulder_yaw_joint" ctrllimited="false" ctrlrange="-3.756 3.756" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/left_elbow_joint" joint="x2/robot/left_elbow_joint" ctrllimited="false" ctrlrange="-3.5556 1.2" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/right_elbow_joint" joint="x2/robot/right_elbow_joint" ctrllimited="false" ctrlrange="-3.5556 1.2" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
+    <general name="x2/robot/left_hip_pitch_joint" joint="x2/robot/left_hip_pitch_joint" ctrllimited="false" ctrlrange="-3.68733 3.53933" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="120" biasprm="0 -120 -5"/>
+    <general name="x2/robot/right_hip_pitch_joint" joint="x2/robot/right_hip_pitch_joint" ctrllimited="false" ctrlrange="-3.68733 3.53933" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="120" biasprm="0 -120 -5"/>
+    <general name="x2/robot/left_hip_roll_joint" joint="x2/robot/left_hip_roll_joint" ctrllimited="false" ctrlrange="-1.415 4.086" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="100" biasprm="0 -100 -4"/>
+    <general name="x2/robot/right_hip_roll_joint" joint="x2/robot/right_hip_roll_joint" ctrllimited="false" ctrlrange="-4.086 1.415" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="100" biasprm="0 -100 -4"/>
+    <general name="x2/robot/left_hip_yaw_joint" joint="x2/robot/left_hip_yaw_joint" ctrllimited="false" ctrlrange="-2.864 4.61" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="100" biasprm="0 -100 -4"/>
+    <general name="x2/robot/right_hip_yaw_joint" joint="x2/robot/right_hip_yaw_joint" ctrllimited="false" ctrlrange="-4.61 2.864" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="100" biasprm="0 -100 -4"/>
+    <general name="x2/robot/left_knee_joint" joint="x2/robot/left_knee_joint" ctrllimited="false" ctrlrange="-0.786667 3.19397" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general name="x2/robot/right_knee_joint" joint="x2/robot/right_knee_joint" ctrllimited="false" ctrlrange="-0.786667 3.19397" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general name="x2/robot/left_ankle_pitch_joint" joint="x2/robot/left_ankle_pitch_joint" ctrllimited="false" ctrlrange="-1.703 1.353" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="40" biasprm="0 -40 -2"/>
+    <general name="x2/robot/right_ankle_pitch_joint" joint="x2/robot/right_ankle_pitch_joint" ctrllimited="false" ctrlrange="-1.703 1.353" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="40" biasprm="0 -40 -2"/>
+    <general name="x2/robot/left_ankle_roll_joint" joint="x2/robot/left_ankle_roll_joint" ctrllimited="false" ctrlrange="-0.862 0.862" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="40" biasprm="0 -40 -2"/>
+    <general name="x2/robot/right_ankle_roll_joint" joint="x2/robot/right_ankle_roll_joint" ctrllimited="false" ctrlrange="-0.8625 0.8625" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="40" biasprm="0 -40 -2"/>
+    <general name="x2/robot/waist_yaw_joint" joint="x2/robot/waist_yaw_joint" ctrllimited="false" ctrlrange="-6.36684 5.31884" forcelimited="true" forcerange="-118 118" biastype="affine" gainprm="40.1792" biasprm="0 -40.1792 -2.5579"/>
+    <general name="x2/robot/waist_pitch_joint" joint="x2/robot/waist_pitch_joint" ctrllimited="false" ctrlrange="-0.554 0.554" forcelimited="true" forcerange="-48 48" biastype="affine" gainprm="200" biasprm="0 -200 -2"/>
+    <general name="x2/robot/waist_roll_joint" joint="x2/robot/waist_roll_joint" ctrllimited="false" ctrlrange="-0.728 0.728" forcelimited="true" forcerange="-48 48" biastype="affine" gainprm="200" biasprm="0 -200 -2"/>
+    <general name="x2/robot/left_shoulder_pitch_joint" joint="x2/robot/left_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-3.8 2.76" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/right_shoulder_pitch_joint" joint="x2/robot/right_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-3.8 2.76" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/left_shoulder_roll_joint" joint="x2/robot/left_shoulder_roll_joint" ctrllimited="false" ctrlrange="-0.781 3.713" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/right_shoulder_roll_joint" joint="x2/robot/right_shoulder_roll_joint" ctrllimited="false" ctrlrange="-3.713 0.781" forcelimited="true" forcerange="-36 36" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/left_shoulder_yaw_joint" joint="x2/robot/left_shoulder_yaw_joint" ctrllimited="false" ctrlrange="-3.036 3.036" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/right_shoulder_yaw_joint" joint="x2/robot/right_shoulder_yaw_joint" ctrllimited="false" ctrlrange="-3.036 3.036" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/left_elbow_joint" joint="x2/robot/left_elbow_joint" ctrllimited="false" ctrlrange="-2.8356 0.48" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
+    <general name="x2/robot/right_elbow_joint" joint="x2/robot/right_elbow_joint" ctrllimited="false" ctrlrange="-2.8356 0.48" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="50" biasprm="0 -50 -3"/>
     <general name="x2/robot/left_wrist_yaw_joint" joint="x2/robot/left_wrist_yaw_joint" ctrllimited="false" ctrlrange="-3.756 3.756" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
     <general name="x2/robot/right_wrist_yaw_joint" joint="x2/robot/right_wrist_yaw_joint" ctrllimited="false" ctrlrange="-3.756 3.756" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/left_ankle_roll_joint" joint="x2/robot/left_ankle_roll_joint" ctrllimited="false" ctrlrange="-2.2024 2.2024" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="12.3686" biasprm="0 -12.3686 -0.787407"/>
-    <general name="x2/robot/right_ankle_roll_joint" joint="x2/robot/right_ankle_roll_joint" ctrllimited="false" ctrlrange="-2.2029 2.2029" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="12.3686" biasprm="0 -12.3686 -0.787407"/>
-    <general name="x2/robot/waist_pitch_joint" joint="x2/robot/waist_pitch_joint" ctrllimited="false" ctrlrange="-1.514 1.514" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -4"/>
-    <general name="x2/robot/waist_roll_joint" joint="x2/robot/waist_roll_joint" ctrllimited="false" ctrlrange="-1.688 1.688" forcelimited="true" forcerange="-24 24" biastype="affine" gainprm="20" biasprm="0 -20 -4"/>
-    <general name="x2/robot/left_wrist_pitch_joint" joint="x2/robot/left_wrist_pitch_joint" ctrllimited="false" ctrlrange="-0.798 0.798" forcelimited="true" forcerange="-4.8 4.8" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/left_wrist_roll_joint" joint="x2/robot/left_wrist_roll_joint" ctrllimited="false" ctrlrange="-1.811 0.964" forcelimited="true" forcerange="-4.8 4.8" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/right_wrist_pitch_joint" joint="x2/robot/right_wrist_pitch_joint" ctrllimited="false" ctrlrange="-0.798 0.798" forcelimited="true" forcerange="-4.8 4.8" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="x2/robot/right_wrist_roll_joint" joint="x2/robot/right_wrist_roll_joint" ctrllimited="false" ctrlrange="-0.964 1.811" forcelimited="true" forcerange="-4.8 4.8" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
+    <general name="x2/robot/left_wrist_pitch_joint" joint="x2/robot/left_wrist_pitch_joint" ctrllimited="false" ctrlrange="-0.668 0.668" forcelimited="true" forcerange="-2.2 2.2" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
+    <general name="x2/robot/right_wrist_pitch_joint" joint="x2/robot/right_wrist_pitch_joint" ctrllimited="false" ctrlrange="-0.668 0.668" forcelimited="true" forcerange="-2.2 2.2" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
+    <general name="x2/robot/left_wrist_roll_joint" joint="x2/robot/left_wrist_roll_joint" ctrllimited="false" ctrlrange="-1.681 0.834" forcelimited="true" forcerange="-2.2 2.2" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
+    <general name="x2/robot/right_wrist_roll_joint" joint="x2/robot/right_wrist_roll_joint" ctrllimited="false" ctrlrange="-0.834 1.681" forcelimited="true" forcerange="-2.2 2.2" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
     <general name="x2/robot/head_yaw_joint" joint="x2/robot/head_yaw_joint" ctrllimited="false" ctrlrange="-0.496 0.496" forcelimited="true" forcerange="-2.6 2.6" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
     <general name="x2/robot/head_pitch_joint" joint="x2/robot/head_pitch_joint" ctrllimited="false" ctrlrange="-0.4138 0.4138" forcelimited="true" forcerange="-0.6 0.6" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/aa_head_yaw_joint" joint="t2/robot/aa_head_yaw_joint" ctrllimited="false" ctrlrange="-2.19956 2.19956" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/head_pitch_joint" joint="t2/robot/head_pitch_joint" ctrllimited="false" ctrlrange="-1.41416 1.50143" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_shoulder_pitch_joint" joint="t2/robot/left_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-6.71942 5.41042" forcelimited="true" forcerange="-74 74" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_shoulder_pitch_joint" joint="t2/robot/right_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-6.71942 5.41042" forcelimited="true" forcerange="-74 74" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_shoulder_roll_joint" joint="t2/robot/left_shoulder_roll_joint" ctrllimited="false" ctrlrange="-4.51844 4.51844" forcelimited="true" forcerange="-60 60" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_shoulder_roll_joint" joint="t2/robot/right_shoulder_roll_joint" ctrllimited="false" ctrlrange="-4.51844 4.51844" forcelimited="true" forcerange="-60 60" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_elbow_pitch_joint" joint="t2/robot/left_elbow_pitch_joint" ctrllimited="false" ctrlrange="-5.05949 5.05949" forcelimited="true" forcerange="-60 60" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_elbow_pitch_joint" joint="t2/robot/right_elbow_pitch_joint" ctrllimited="false" ctrlrange="-5.05949 5.05949" forcelimited="true" forcerange="-60 60" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_elbow_yaw_joint" joint="t2/robot/left_elbow_yaw_joint" ctrllimited="false" ctrlrange="-5.10312 3" forcelimited="true" forcerange="-60 60" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_elbow_yaw_joint" joint="t2/robot/right_elbow_yaw_joint" ctrllimited="false" ctrlrange="-3 5.10312" forcelimited="true" forcerange="-60 60" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_wrist_pitch_joint" joint="t2/robot/left_wrist_pitch_joint" ctrllimited="false" ctrlrange="-3.15949 3.15949" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_wrist_pitch_joint" joint="t2/robot/right_wrist_pitch_joint" ctrllimited="false" ctrlrange="-3.15949 3.15949" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_wrist_yaw_joint" joint="t2/robot/left_wrist_yaw_joint" ctrllimited="false" ctrlrange="-1.84875 1.77893" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_wrist_yaw_joint" joint="t2/robot/right_wrist_yaw_joint" ctrllimited="false" ctrlrange="-1.77893 1.84875" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/left_wrist_roll_joint" joint="t2/robot/left_wrist_roll_joint" ctrllimited="false" ctrlrange="-2.46136 2.02503" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/right_wrist_roll_joint" joint="t2/robot/right_wrist_roll_joint" ctrllimited="false" ctrlrange="-2.02503 2.46136" forcelimited="true" forcerange="-22 22" biastype="affine" gainprm="20" biasprm="0 -20 -2"/>
-    <general name="t2/robot/waist_pitch_joint" joint="t2/robot/waist_pitch_joint" ctrllimited="false" ctrlrange="-7.65049 7.45851" forcelimited="true" forcerange="-138 138" biastype="affine" gainprm="20" biasprm="0 -20 -4"/>
-    <general name="t2/robot/waist_roll_joint" joint="t2/robot/waist_roll_joint" ctrllimited="false" ctrlrange="-7.55779 7.55779" forcelimited="true" forcerange="-144 144" biastype="affine" gainprm="20" biasprm="0 -20 -4"/>
-    <general name="t2/robot/waist_yaw_joint" joint="t2/robot/waist_yaw_joint" ctrllimited="false" ctrlrange="-9.15855 9.15855" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="20" biasprm="0 -20 -4"/>
-    <general name="t2/robot/left_hip_pitch_joint" joint="t2/robot/left_hip_pitch_joint" ctrllimited="false" ctrlrange="-4.14909 3.45096" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/right_hip_pitch_joint" joint="t2/robot/right_hip_pitch_joint" ctrllimited="false" ctrlrange="-4.14909 3.45096" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/left_hip_roll_joint" joint="t2/robot/left_hip_roll_joint" ctrllimited="false" ctrlrange="-1.79289 2.75283" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/right_hip_roll_joint" joint="t2/robot/right_hip_roll_joint" ctrllimited="false" ctrlrange="-2.75283 1.79289" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/left_hip_yaw_joint" joint="t2/robot/left_hip_yaw_joint" ctrllimited="false" ctrlrange="-3.97456 3.97456" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/right_hip_yaw_joint" joint="t2/robot/right_hip_yaw_joint" ctrllimited="false" ctrlrange="-3.97456 3.97456" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/left_knee_pitch_joint" joint="t2/robot/left_knee_pitch_joint" ctrllimited="false" ctrlrange="-1.21694 3.80003" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/right_knee_pitch_joint" joint="t2/robot/right_knee_pitch_joint" ctrllimited="false" ctrlrange="-1.21694 3.80003" forcelimited="true" forcerange="-135 135" biastype="affine" gainprm="110.934" biasprm="0 -110.934 -7.0623"/>
-    <general name="t2/robot/left_ankle_pitch_joint" joint="t2/robot/left_ankle_pitch_joint" ctrllimited="false" ctrlrange="-1.57729 1.26313" forcelimited="true" forcerange="-132 132" biastype="affine" gainprm="141.704" biasprm="0 -141.704 -9.02117"/>
-    <general name="t2/robot/right_ankle_pitch_joint" joint="t2/robot/right_ankle_pitch_joint" ctrllimited="false" ctrlrange="-1.57729 1.26313" forcelimited="true" forcerange="-132 132" biastype="affine" gainprm="141.704" biasprm="0 -141.704 -9.02117"/>
-    <general name="t2/robot/left_ankle_roll_joint" joint="t2/robot/left_ankle_roll_joint" ctrllimited="false" ctrlrange="-1.68176 1.68176" forcelimited="true" forcerange="-72 72" biastype="affine" gainprm="52.6469" biasprm="0 -52.6469 -3.3516"/>
-    <general name="t2/robot/right_ankle_roll_joint" joint="t2/robot/right_ankle_roll_joint" ctrllimited="false" ctrlrange="-1.68176 1.68176" forcelimited="true" forcerange="-72 72" biastype="affine" gainprm="52.6469" biasprm="0 -52.6469 -3.3516"/>
+    <general name="t2/robot/aa_head_yaw_joint" joint="t2/robot/aa_head_yaw_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/head_pitch_joint" joint="t2/robot/head_pitch_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/left_shoulder_pitch_joint" joint="t2/robot/left_shoulder_pitch_joint" ctrllimited="true" ctrlrange="-74 74" forcelimited="true" forcerange="-74 74"/>
+    <general name="t2/robot/right_shoulder_pitch_joint" joint="t2/robot/right_shoulder_pitch_joint" ctrllimited="true" ctrlrange="-74 74" forcelimited="true" forcerange="-74 74"/>
+    <general name="t2/robot/left_shoulder_roll_joint" joint="t2/robot/left_shoulder_roll_joint" ctrllimited="true" ctrlrange="-60 60" forcelimited="true" forcerange="-60 60"/>
+    <general name="t2/robot/right_shoulder_roll_joint" joint="t2/robot/right_shoulder_roll_joint" ctrllimited="true" ctrlrange="-60 60" forcelimited="true" forcerange="-60 60"/>
+    <general name="t2/robot/left_elbow_pitch_joint" joint="t2/robot/left_elbow_pitch_joint" ctrllimited="true" ctrlrange="-60 60" forcelimited="true" forcerange="-60 60"/>
+    <general name="t2/robot/right_elbow_pitch_joint" joint="t2/robot/right_elbow_pitch_joint" ctrllimited="true" ctrlrange="-60 60" forcelimited="true" forcerange="-60 60"/>
+    <general name="t2/robot/left_elbow_yaw_joint" joint="t2/robot/left_elbow_yaw_joint" ctrllimited="true" ctrlrange="-60 60" forcelimited="true" forcerange="-60 60"/>
+    <general name="t2/robot/right_elbow_yaw_joint" joint="t2/robot/right_elbow_yaw_joint" ctrllimited="true" ctrlrange="-60 60" forcelimited="true" forcerange="-60 60"/>
+    <general name="t2/robot/left_wrist_pitch_joint" joint="t2/robot/left_wrist_pitch_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/right_wrist_pitch_joint" joint="t2/robot/right_wrist_pitch_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/left_wrist_yaw_joint" joint="t2/robot/left_wrist_yaw_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/right_wrist_yaw_joint" joint="t2/robot/right_wrist_yaw_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/left_wrist_roll_joint" joint="t2/robot/left_wrist_roll_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/right_wrist_roll_joint" joint="t2/robot/right_wrist_roll_joint" ctrllimited="true" ctrlrange="-22 22" forcelimited="true" forcerange="-22 22"/>
+    <general name="t2/robot/waist_pitch_joint" joint="t2/robot/waist_pitch_joint" ctrllimited="true" ctrlrange="-138 138" forcelimited="true" forcerange="-138 138"/>
+    <general name="t2/robot/waist_roll_joint" joint="t2/robot/waist_roll_joint" ctrllimited="true" ctrlrange="-144 144" forcelimited="true" forcerange="-144 144"/>
+    <general name="t2/robot/waist_yaw_joint" joint="t2/robot/waist_yaw_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/left_hip_pitch_joint" joint="t2/robot/left_hip_pitch_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/right_hip_pitch_joint" joint="t2/robot/right_hip_pitch_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/left_hip_roll_joint" joint="t2/robot/left_hip_roll_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/right_hip_roll_joint" joint="t2/robot/right_hip_roll_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/left_hip_yaw_joint" joint="t2/robot/left_hip_yaw_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/right_hip_yaw_joint" joint="t2/robot/right_hip_yaw_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/left_knee_pitch_joint" joint="t2/robot/left_knee_pitch_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/right_knee_pitch_joint" joint="t2/robot/right_knee_pitch_joint" ctrllimited="true" ctrlrange="-135 135" forcelimited="true" forcerange="-135 135"/>
+    <general name="t2/robot/left_ankle_pitch_joint" joint="t2/robot/left_ankle_pitch_joint" ctrllimited="true" ctrlrange="-132 132" forcelimited="true" forcerange="-132 132"/>
+    <general name="t2/robot/right_ankle_pitch_joint" joint="t2/robot/right_ankle_pitch_joint" ctrllimited="true" ctrlrange="-132 132" forcelimited="true" forcerange="-132 132"/>
+    <general name="t2/robot/left_ankle_roll_joint" joint="t2/robot/left_ankle_roll_joint" ctrllimited="true" ctrlrange="-72 72" forcelimited="true" forcerange="-72 72"/>
+    <general name="t2/robot/right_ankle_roll_joint" joint="t2/robot/right_ankle_roll_joint" ctrllimited="true" ctrlrange="-72 72" forcelimited="true" forcerange="-72 72"/>
   </actuator>
 </mujoco>
