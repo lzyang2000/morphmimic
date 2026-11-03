@@ -35,7 +35,7 @@ def write_fixture(cache, failed=()):
   rec.mkdir(parents=True)
   qs = {}
   for k, robot in enumerate(NQ):
-    for j, iface in enumerate(("motion", "keypoint")):
+    for j, iface in enumerate(pr.INTERFACES):
       frames = 100 + 10 * k + j
       q = make_rec(frames, NQ[robot], 10 * k + j)
       stem = f"{robot}_{iface}"
@@ -91,14 +91,14 @@ class PackTest(unittest.TestCase):
     return json.loads((self.out / "rec" / "index.json").read_text())
 
   def test_pack_marks_failed_recordings_unavailable(self):
-    write_fixture(self.cache, failed={("x2", "keypoint")})
+    write_fixture(self.cache, failed={("x2", "motion")})
     pr.pack(self.cache, self.out)
     idx = self.index()
     clip = idx["clips"][0]
-    bad = clip["robots"]["x2"]["keypoint"]
+    bad = clip["robots"]["x2"]["motion"]
     self.assertFalse(bad["available"])
     self.assertEqual(bad["frames"], 0)
-    self.assertTrue(clip["robots"]["x2"]["motion"]["available"])
+    self.assertTrue(clip["robots"]["g1"]["motion"]["available"])
     size = (self.out / "rec" / f"{CLIP}.bin").stat().st_size
     ok_frames = sum(e["frames"] * e["nq"] for r in clip["robots"].values() for e in r.values())
     self.assertEqual(size, 4 * ok_frames)
@@ -124,8 +124,8 @@ class PackTest(unittest.TestCase):
     clip = idx["clips"][0]
     self.assertEqual(clip["label"], "Walk")
     self.assertEqual(list(clip["robots"]), ["g1", "x2", "t2"])
-    self.assertAlmostEqual(clip["duration"], (max(100 + 20 + 1, 0) - 1) / 50)
-    e = clip["robots"]["t2"]["keypoint"]
+    self.assertAlmostEqual(clip["duration"], (100 + 20 - 1) / 50)
+    e = clip["robots"]["t2"]["motion"]
     self.assertEqual(set(e), {"offset", "frames", "available", "jointErr", "nq"})
     self.assertEqual(e["nq"], 38)
     self.assertAlmostEqual(e["jointErr"], 0.07)
@@ -135,7 +135,7 @@ class PackTest(unittest.TestCase):
     pr.pack(self.cache, self.out)
     clip = self.index()["clips"][0]
     blob = (self.out / "rec" / f"{CLIP}.bin").read_bytes()
-    lateral = {"g1": -1.5, "x2": 0.0, "t2": 1.5}
+    lateral = {"g1": 0.0, "x2": -1.5, "t2": 1.5}
     for robot, ifaces in clip["robots"].items():
       for iface, e in ifaces.items():
         self.assertEqual(e["offset"] % 4, 0)

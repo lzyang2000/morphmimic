@@ -6,11 +6,24 @@ can drag a robot to push it: a spring toward the cursor, capped in `src/live/sim
 (`PUSH_MAX_N`), and the policy has to catch the robot. Plus the
 tools that record the runs for the page videos, render the videos and deploy the project page.
 
+The page runs the released v0.1 policy (`morphmimic_policy.zip`: `policy.onnx`, `g1_amber.json`,
+`x2.json`, `t2.json`) on its motion interface only; the page's G1 is `g1_amber`, the released
+policy's G1 (`tools/gen_live_assets.py` `POLICY_ROBOT`). On screen the robots stand X2 Ultra, G1,
+T2 from left to right (`tools/pack_recordings.py` `LATERAL`).
+
 Python tools run from the repo root with `uv run --group export ...`; npm scripts and `.mjs` tools
 run from `web/`. Everything they produce goes to the git-ignored `web/.cache/`, `web/public/` and
 `web/dist/`.
 
 ## Tools, in the order to run them
+
+**v0.1 recordings** were made locally, without step 1: the release zip unpacked into
+`.cache/live/policy/`, an `export_assets.py` folder from the release code holding
+`g1_amber.xml`, `x2.xml`, `t2.xml`, `meshes/` and `clips/<robot>/<clip>.npz` (with
+`clips/g1_amber` the G1's clips) copied to `.cache/assets/`, then
+`uv run --group export python web/tools/record_clips.py --deploy web/.cache/live/policy --assets
+<that folder> --clips <the ten clips> --robots g1_amber x2 t2 --interfaces motion --out
+web/.cache/recordings` and `policy.txt` set by hand.
 
 1. **Record** (`web/tools/record_remote.sh <iteration|auto> [export|assets|record|fetch|all]`, from
    the repo root): freezes a `unified_v2` checkpoint on the recording host, exports it with
@@ -39,11 +52,14 @@ run from `web/`. Everything they produce goes to the git-ignored `web/.cache/`, 
    `<robot>/<clip>.npz`, space-separated: the base clips and the one with the robot-dance clip),
    with no defaults. Then `uv run --group export python web/tools/gen_live_assets.py` writes
    `public/live/`: the physics scene (`scene.xml`, `scene.json`: the three robots with their
-   actuators and collision geoms, one floor, no robot-to-robot contact), the policy side's inputs
-   (`robots.json`), `policy.onnx`, and the reference states (`clips.json`, `clips/<clip>.bin`:
+   actuators and collision geoms, one floor, no robot-to-robot contact; the T2's joints are
+   DC motors, whose clipped PD torque `src/live/sim.js` computes before each physics step as
+   `sim_node.SimRobot.dc_torque` does), the policy side's inputs
+   (`robots.json`), `policy.onnx` (the export cut down to `action_motion` and the inputs it
+   reads), and the reference states (`clips.json`, `clips/<clip>.bin`:
    only the first 156 of the 240 state columns, the ones the goals read; the page fills the body
    velocities with zeros when it loads a clip).
-3. **Test**: `npm test` (live policy side, loop, worker driver, five-point overlay data,
+3. **Test**: `npm test` (live policy side, loop, worker driver, DC motors, five-point overlay data,
    stage fade, WebAssembly SIMD probe, policy start-up order, packed clips, site checks,
    leak-list and drag-to-push tests; the push tests run the real MuJoCo scene and policy from
    `public/live/` and are skipped without it) and the Python tests,
@@ -53,20 +69,20 @@ run from `web/`. Everything they produce goes to the git-ignored `web/.cache/`, 
    skipped without them.
 4. **Cross-check**: `npm run xcheck-live` checks the live demo's policy side (`src/live/obs.js`,
    `src/live/reference.js`) against the Python deploy code: `tools/xcheck_live.py` runs the CPU
-   sim2sim from the stand for each robot and interface (one full loop of the stand, lead-in, clip,
+   sim2sim from the stand for each robot (one full loop of the stand, lead-in, clip,
    return and hold, then the next cue with another clip) and writes each tick's measurements and
    policy inputs to `.cache/xcheck_live/`; `tools/xcheck_live.mjs` rebuilds the inputs in JS from
    the same measurements and fails on a difference over 1e-5. It needs `public/live/` and
    `.cache/live/` (step 2).
    `npm run xcheck-policy` checks `src/live/policy.js` (onnxruntime-web, WASM, one thread, SIMD)
-   against Python onnxruntime on `public/live/policy.onnx`: 64 random input sets per robot, both
-   interfaces, fail over 1e-4; it then times `act` and says whether 3 robots at 50 Hz fit 20 ms.
+   on the page's pruned `public/live/policy.onnx` against Python onnxruntime on the full export:
+   64 random input sets per robot, fail over 1e-4; it then times `act` and says whether 3 robots at 50 Hz fit 20 ms.
    In the page, `src/live/ort_browser.js` points ORT at the `.wasm` Vite emits into `dist/`.
    `npm run headless-live` runs the live loop (`src/live/sim.js`, `src/live/loop.js`) in Node on
-   the real MuJoCo WASM model and policy: every clip, both interfaces, the three robots together,
+   the real MuJoCo WASM model and policy: every clip, the three robots together,
    two loops each; it reports falls, joint error, end drift and the real-time factor into
    `.cache/headless_live/`, and fails on a motion-interface fall or a joint error more than
-   0.03 rad from the Python sim2sim's. `tools/py_from_stand.sh [motion|keypoint]` writes those
+   0.03 rad from the Python sim2sim's. `tools/py_from_stand.sh` writes those
    Python figures first (`deploy.run --from-stand 2 --cue-s 1` per clip and robot, real time,
    about 4 minutes per robot). `npm run check-live-bundle` builds a page that only runs the live
    worker (`src/live/worker.js`), opens it in headless Chrome with every other host blocked, and
@@ -118,7 +134,7 @@ run from `web/`. Everything they produce goes to the git-ignored `web/.cache/`, 
 
 `DEMO_BASE=/demo/ npm run build`, `node tools/deploy_ghpages.mjs --no-commit`, then
 `node tools/shot_site.mjs <outdir> --width 1440` (and `--width 390`) for screenshots and console
-errors. `node tools/screenshot.mjs out.png [--view N[,IFACE]] [--at S]` checks the demo on its own:
-it opens clip N on an interface (`?clip=N&iface=motion|keypoint`), lets the simulation run S
+errors. `node tools/screenshot.mjs out.png [--view N] [--at S]` checks the demo on its own:
+it opens clip N (`?clip=N`), lets the simulation run S
 seconds and saves the frame. Rebuild with
 the default base and deploy again before committing.

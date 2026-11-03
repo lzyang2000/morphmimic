@@ -27,7 +27,7 @@ _summary = None
 
 def setUpModule():
   global _tmp, _out, _summary
-  if not (ASSETS / "g1.xml").exists():
+  if not (ASSETS / "g1_amber.xml").exists():
     raise unittest.SkipTest("web/.cache/assets not found (record_remote.sh fetch)")
   if not (LIVE_IN / "policy" / "policy.onnx").exists():
     raise unittest.SkipTest("web/.cache/live not found (tools/fetch_live_inputs.sh)")
@@ -46,7 +46,7 @@ def live(name):
 
 
 def single(name):
-  return mujoco.MjModel.from_xml_path(str(ASSETS / f"{name}.xml"))
+  return mujoco.MjModel.from_xml_path(str(ASSETS / f"{gla.POLICY_ROBOT.get(name, name)}.xml"))
 
 
 def leak_strings():
@@ -142,7 +142,10 @@ class LiveSceneTest(unittest.TestCase):
                     "actuator_forcerange", "actuator_forcelimited", "actuator_gear"):
         np.testing.assert_array_equal(getattr(m, field)[sl], getattr(s, field), err_msg=f"{n} {field}")
       self.assertEqual(r["ctrlRange"], s.actuator_ctrlrange.tolist())
-      self.assertEqual(r["kp"], s.actuator_gainprm[:, 0].tolist())
+      motor = s.actuator_biastype == mujoco.mjtBias.mjBIAS_NONE  # sim_node's DC motors
+      self.assertEqual(r["dc"] is not None, bool(motor.any()), n)
+      if r["dc"] is not None:
+        self.assertEqual(r["dc"]["motor"], motor.astype(int).tolist())
       dv = slice(r["qveladr"], r["qveladr"] + s.nv)
       for field in ("dof_armature", "dof_damping", "dof_frictionloss"):
         np.testing.assert_array_equal(getattr(m, field)[dv], getattr(s, field), err_msg=f"{n} {field}")
@@ -234,6 +237,22 @@ class LiveSceneTest(unittest.TestCase):
         pairs.add(frozenset((self.robot_of_geom(c.geom1), self.robot_of_geom(c.geom2))))
     return pairs
 
+  @staticmethod
+  def _ctrl(r, target, qpos, qvel):
+    """ctrl for actuator targets: the targets for position actuators, the DC-motor torque
+    (SimRobot.dc_torque, scene.json `dc`) for torque actuators."""
+    dc = r["dc"]
+    if dc is None:
+      return target
+    j = np.array(r["actNative"])
+    q = qpos[np.array(r["jointQposadr"])[j]]
+    qd = qvel[np.array(r["jointDofadr"])[j]]
+    kp, kd, limit, sat, vmax = (np.array(dc[k]) for k in ("kp", "kd", "limit", "sat", "vmax"))
+    torque = kp * (target - q) - kd * qd
+    assert dc["law"] == "booster"  # the only DC law in the page's robots (the T2)
+    bound = np.minimum(np.maximum(sat * (1 - np.abs(qd) / vmax), 0.0), limit)
+    return np.where(np.array(dc["motor"]) == 1, np.clip(torque, -bound, bound), target)
+
   def _stand_ctrl(self, r):
     q = np.array(r["standQpos"])
     return [q[adr - r["qposadr"]] for adr in np.array(r["jointQposadr"])[r["actNative"]]]
@@ -267,9 +286,13 @@ class LiveSceneTest(unittest.TestCase):
     for step in range(100):
       for r in self.scene["robots"]:
         s, sd = sims[r["name"]]
-        ctrl = np.array(self._stand_ctrl(r)) + 0.1 * np.sin(2 * np.pi * t + np.arange(r["nu"]))
-        cd.ctrl[r["ctrladr"]:r["ctrladr"] + r["nu"]] = ctrl
-        sd.ctrl[:] = ctrl
+        target = np.array(self._stand_ctrl(r)) + 0.1 * np.sin(2 * np.pi * t + np.arange(r["nu"]))
+        cd.ctrl[r["ctrladr"]:r["ctrladr"] + r["nu"]] = self._ctrl(r, target, cd.qpos, cd.qvel)
+        q = np.zeros(m.nq)  # the single robot's state at the combined scene's addresses
+        v = np.zeros(m.nv)
+        q[r["qposadr"]:r["qposadr"] + r["nq"]] = sd.qpos
+        v[r["qveladr"]:r["qveladr"] + r["nv"]] = sd.qvel
+        sd.ctrl[:] = self._ctrl(r, target, q, v)
         mujoco.mj_step(s, sd)
       mujoco.mj_step(m, cd)
       t += m.opt.timestep
@@ -322,20 +345,19 @@ class LivePolicyFilesTest(unittest.TestCase):
 
   def test_policy_fields(self):
     d = self.doc
-    self.assertEqual((d["run"], d["iteration"]), ("unified_v2", 76000))
+    self.assertEqual((d["run"], d["iteration"]), ("unified", 60000))
     self.assertEqual(d["historyLen"], 10)
     self.assertEqual((d["proprioDim"], d["goalK"], d["referenceLead"], d["fps"]), (93, 10, 1, 50))
-    self.assertEqual(d["kpIdx"], [0, 3, 6, 10, 13])
     self.assertEqual((d["loop"]["leadInS"], d["loop"]["returnS"], d["loop"]["holdS"]), (2.0, 1.0, 1.0))
     self.assertEqual([r["name"] for r in d["robots"]], list(NAMES))
     for r in d["robots"]:
       n = r["name"]
-      exp = json.loads((LIVE_IN / "policy" / f"{n}.json").read_text())
-      baked = json.loads((REPO / f"deploy/sim2sim/robots/{n}.json").read_text())
-      self.assertEqual(r["kpGoalVersion"], exp["kp_goal_version"])
+      p = gla.POLICY_ROBOT.get(n, n)
+      exp = json.loads((LIVE_IN / "policy" / f"{p}.json").read_text())
+      baked = json.loads((REPO / f"deploy/sim2sim/robots/{p}.json").read_text())
+      self.assertEqual(set(r["inputs"]), {"obsMean", "obsVar", "goalMean", "goalVar", "morph"})
       for k, ours in (("obs_mean", "obsMean"), ("obs_var", "obsVar"), ("goal_mean", "goalMean"),
-                      ("goal_var", "goalVar"), ("kp_mean", "kpMean"), ("kp_var", "kpVar"),
-                      ("morph", "morph")):
+                      ("goal_var", "goalVar"), ("morph", "morph")):
         self.assertEqual(r["inputs"][ours], exp["inputs"][k], k)
       src = exp["robot"]
       for b in (src, baked):  # the export's robot entry and the baked constants agree
@@ -356,16 +378,23 @@ class LivePolicyFilesTest(unittest.TestCase):
       self.assertEqual(r["stand"]["state"], STAND[n]["state"])
       self.assertEqual(len(r["stand"]["state"]), 240)
 
-  def test_policy_onnx_is_the_export(self):
-    a = hashlib.sha256(live("policy.onnx").read_bytes()).hexdigest()
-    b = hashlib.sha256((LIVE_IN / "policy" / "policy.onnx").read_bytes()).hexdigest()
-    self.assertEqual(a, b)
+  def test_policy_onnx_is_the_export_cut_to_motion(self):
+    import onnxruntime as ort
+
+    page = ort.InferenceSession(str(live("policy.onnx")), providers=["CPUExecutionProvider"])
+    full = ort.InferenceSession(str(LIVE_IN / "policy" / "policy.onnx"),
+                                providers=["CPUExecutionProvider"])
+    self.assertEqual([o.name for o in page.get_outputs()], ["action_motion"])
+    self.assertEqual(sorted(i.name for i in page.get_inputs()),
+                     ["goal_mean", "goal_motion", "goal_var", "morph", "obs_history", "obs_mean",
+                      "obs_var"])
+    self.assertLessEqual({i.name for i in page.get_inputs()}, {i.name for i in full.get_inputs()})
 
   def test_policy_size_and_hash_recorded(self):
     blob = live("policy.onnx").read_bytes()
     self.assertEqual(self.doc["policy"], {"file": "policy.onnx", "bytes": len(blob),
                                           "sha256": hashlib.sha256(blob).hexdigest()})
-    self.assertGreater(self.doc["policy"]["bytes"], 50_000_000)
+    self.assertGreater(self.doc["policy"]["bytes"], 30_000_000)
 
 
 class LiveClipsTest(unittest.TestCase):

@@ -6,9 +6,12 @@
 //   (ctrl = the stand's joint positions), then mj_forward. A full reset starts from
 //   mj_resetData as SimRobot.reset does; a one-robot reset clears that robot's qpos, qvel and
 //   warm start only, so the others run on untouched.
-// - Control step: the native joint targets go straight to ctrl through actNative (the scenes'
-//   built-in position PD; ctrl is not clipped to ctrlRange: the exported scenes have
-//   ctrllimited off, and so does sim_node), then `decimation` mj_step calls and an mj_forward.
+// - Control step: the native joint targets go to the actuators through actNative. A position
+//   actuator takes its target as ctrl (the scene's built-in PD; not clipped to ctrlRange: the
+//   exported scenes have ctrllimited off, and so does sim_node). A DC-motor actuator (scene.json
+//   `dc`, the T2's) is a torque actuator: before every physics step its ctrl is the explicit PD
+//   kp (target - q) - kd qd clipped to the torque-speed curve (dcTorque, SimRobot.dc_torque).
+//   Then `decimation` mj_step calls and an mj_forward.
 // - Measurements: the IMU body's world xquat, its angular velocity in its own frame
 //   (mj_objectVelocity on XBODY, local), and the native joints' qpos and qvel.
 // - Fall: the slot-0 body (pelvis-equivalent) below fall.height or tilted past fall.tiltDeg
@@ -50,6 +53,22 @@ export function pushForce(p, v, target, out = new Float64Array(3)) {
   return out;
 }
 
+/** SimRobot.dc_torque for one motor: kp (target - q) - kd qd within [-limit, limit] and the
+ * torque-speed curve, mjlab's DcMotorActuator (sat (+-1 - qd / vmax)) or, for law 'booster',
+ * the two-sided +-max(0, sat (1 - |qd| / vmax)). */
+export function dcTorque(law, kp, kd, limit, sat, vmax, target, q, qd) {
+  const torque = kp * (target - q) - kd * qd;
+  if (law === 'booster') {
+    const bound = Math.min(Math.max(sat * (1 - Math.abs(qd) / vmax), 0), limit);
+    return Math.min(Math.max(torque, -bound), bound);
+  }
+  const vlim = vmax * (1 + limit / sat);
+  const v = Math.min(Math.max(qd, -vlim), vlim);
+  const upper = Math.min(sat * (1 - v / vmax), limit);
+  const lower = Math.max(sat * (-1 - v / vmax), -limit);
+  return Math.min(Math.max(torque, lower), upper);
+}
+
 const vec3 = (a, what) => {
   if (!Array.isArray(a) && !ArrayBuffer.isView(a)) throw new Error(`${what} must be [x, y, z]`);
   if (a.length !== 3 || !Array.prototype.every.call(a, Number.isFinite)) throw new Error(`${what} must be three finite numbers`);
@@ -80,6 +99,16 @@ export class LiveSim {
       actNative: Int32Array.from(r.actNative),
       standQpos: Float64Array.from(r.standQpos),
       slot0: r.trackedBodyIds[0],
+      targets: new Float64Array(r.nu), // per actuator, as SimRobot.targets
+      dc: r.dc && {
+        law: r.dc.law,
+        motor: Uint8Array.from(r.dc.motor),
+        kp: Float64Array.from(r.dc.kp),
+        kd: Float64Array.from(r.dc.kd),
+        limit: Float64Array.from(r.dc.limit),
+        sat: Float64Array.from(r.dc.sat),
+        vmax: Float64Array.from(r.dc.vmax),
+      },
     }));
     this.fallHeight = scene.fall.height;
     this.fallUpZ = Math.cos((scene.fall.tiltDeg * Math.PI) / 180);
@@ -109,11 +138,30 @@ export class LiveSim {
     warm.fill(0, R.qveladr, R.qveladr + R.nv);
   }
 
-  /** ctrl of robot `r` = its joints' current positions (SimRobot.reset's set_targets(qpos)). */
+  /** Robot `r`'s targets = its joints' current positions (SimRobot.reset's set_targets(qpos)). */
   _holdPose(r) {
     const R = this.robots[r];
-    const qpos = this.data.qpos, ctrl = this.data.ctrl;
-    for (let a = 0; a < R.nu; a++) ctrl[R.ctrladr + a] = qpos[R.jointQposadr[R.actNative[a]]];
+    const qpos = this.data.qpos;
+    for (let a = 0; a < R.nu; a++) R.targets[a] = qpos[R.jointQposadr[R.actNative[a]]];
+    this._writeCtrl(R);
+  }
+
+  /** ctrl of robot R's position actuators = their targets (SimRobot.set_targets). */
+  _writeCtrl(R) {
+    const ctrl = this.data.ctrl;
+    for (let a = 0; a < R.nu; a++) if (!R.dc?.motor[a]) ctrl[R.ctrladr + a] = R.targets[a];
+  }
+
+  /** ctrl of robot R's DC motors = their torque now (SimRobot.step, before each mj_step). */
+  _dcCtrl(R) {
+    const { law, motor, kp, kd, limit, sat, vmax } = R.dc;
+    const ctrl = this.data.ctrl, qpos = this.data.qpos, qvel = this.data.qvel;
+    for (let a = 0; a < R.nu; a++) {
+      if (!motor[a]) continue;
+      const j = R.actNative[a];
+      ctrl[R.ctrladr + a] = dcTorque(law, kp[a], kd[a], limit[a], sat[a], vmax[a], R.targets[a],
+        qpos[R.jointQposadr[j]], qvel[R.jointDofadr[j]]);
+    }
   }
 
   /** Every robot to its stand: mj_resetData, the stands, mj_forward, ctrl holding them. Any
@@ -157,11 +205,12 @@ export class LiveSim {
     return out;
   }
 
-  /** Robot `r`'s native joint targets [J] to its position actuators (not clipped). */
+  /** Robot `r`'s native joint targets [J] to its actuators (not clipped): ctrl of the position
+   * actuators now, the DC motors' torque before each physics step. */
   setTargets(r, targets) {
     const R = this.robots[r];
-    const ctrl = this.data.ctrl;
-    for (let a = 0; a < R.nu; a++) ctrl[R.ctrladr + a] = targets[R.actNative[a]];
+    for (let a = 0; a < R.nu; a++) R.targets[a] = targets[R.actNative[a]];
+    this._writeCtrl(R);
   }
 
   /** Push robot `r` from now on: a spring from the point `local` (in the frame of MuJoCo body
@@ -235,6 +284,7 @@ export class LiveSim {
    * any, recomputed first), then mj_forward. */
   step() {
     for (let i = 0; i < this.decimation; i++) {
+      for (const R of this.robots) if (R.dc) this._dcCtrl(R);
       if (this.push) this._applyPush();
       this.mj.mj_step(this.model, this.data);
     }

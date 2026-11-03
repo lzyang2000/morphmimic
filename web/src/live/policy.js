@@ -3,29 +3,26 @@
 // and morph from robots.json) and refilled in place every control step, so a step allocates
 // nothing but the 29-float result.
 //
-// `act` runs only the chosen interface's output (the other branch is pruned from the run), and
-// returns a fresh Float32Array(29): the canonical action, which PolicyInputs.setAction takes
-// back unchanged.
+// The model is the released policy cut down to its motion output (tools/gen_live_assets.py), so
+// `act` runs the motion interface only and returns a fresh Float32Array(29): the canonical
+// action, which PolicyInputs.setAction takes back unchanged.
 //
 // Single thread means the page needs no cross-origin isolation (SharedArrayBuffer) headers.
 // The ORT module and the WASM location are injectable: Node loads them from node_modules, the
 // page passes the URL Vite emits for the .wasm (src/live/ort_browser.js).
 
 export const ACTION_DIM = 29;
-const OUTPUTS = { motion: 'action_motion', keypoint: 'action_keypoint' };
+const OUTPUTS = { motion: 'action_motion' };
 // Per-step inputs, in the order PolicyInputs.step returns them, with their element counts and
 // ONNX types.
 const STEP_INPUTS = [
   ['obs_history', 930, 'float32'],
   ['goal_motion', 670, 'float32'],
-  ['goal_keypoint', 450, 'float32'],
-  ['kp_point_mask', 5, 'bool'],
-  ['kp_frame_mask', 10, 'bool'],
 ];
 // robots.json inputs key -> ONNX input name.
 const STATIC_INPUTS = {
   obsMean: 'obs_mean', obsVar: 'obs_var', goalMean: 'goal_mean',
-  goalVar: 'goal_var', kpMean: 'kp_mean', kpVar: 'kp_var', morph: 'morph',
+  goalVar: 'goal_var', morph: 'morph',
 };
 
 /** Reads `url` (or a Response) into an ArrayBuffer, calling onProgress(loaded, total) as it comes. */
@@ -80,12 +77,12 @@ export class Policy {
 
   /**
    * One policy step for robot `robotIdx` (index into the robots passed to loadPolicy).
-   * `inputs` is PolicyInputs.step's result; `iface` is 'motion' or 'keypoint'.
+   * `inputs` is PolicyInputs.step's result; `iface` is 'motion'.
    * Resolves to the canonical action, Float32Array[29].
    */
   async act(robotIdx, inputs, iface) {
     const name = OUTPUTS[iface];
-    if (!name) throw new Error(`interface must be motion or keypoint, got ${iface}`);
+    if (!name) throw new Error(`interface must be motion, got ${iface}`);
     const slot = this.slots[robotIdx];
     if (!slot) throw new Error(`no robot ${robotIdx}`);
     for (const [key, n] of STEP_INPUTS) {

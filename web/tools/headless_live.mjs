@@ -1,6 +1,6 @@
 // Headless check of the live demo's loop in Node: the real MuJoCo WASM model (public/live/scene.xml),
-// the real policy on onnxruntime-web (public/live/policy.onnx), every clip on both interfaces with
-// the three robots together as in the page, each robot looping (stand, lead-in, clip, return,
+// the real policy on onnxruntime-web (public/live/policy.onnx), every clip on the motion interface
+// (the page's only one) with the three robots together as in the page, each robot looping (stand, lead-in, clip, return,
 // hold) twice. Runs unthrottled and reports, per run and robot:
 //   falls; joint RMS error (rad, the canonical joints against frame 0 of the window the policy
 //   tracked, averaged over control steps, as sim_node.run_teleop measures it) over both loops and
@@ -8,10 +8,9 @@
 //   its current five-point pelvis target); the wall-clock real-time factor (sim s per wall s).
 // With the Python sim2sim summaries of tools/py_from_stand.sh in .cache/headless_live/py/ it puts
 // the joint errors side by side. Exits 1 on a fall on the motion interface, or a motion-interface
-// joint error more than --tol (0.03 rad) from Python's for the same clip and robot; keypoint falls
-// and errors are reported only.
+// joint error more than --tol (0.03 rad) from Python's for the same clip and robot.
 //
-//   node tools/headless_live.mjs [--clips 0,3] [--ifaces motion,keypoint] [--loops 2] [--tol 0.03]
+//   node tools/headless_live.mjs [--clips 0,3] [--loops 2] [--tol 0.03]
 //   node tools/headless_live.mjs --compare [--ifaces ...]   (the table again, from the last js.json)
 //
 // Writes .cache/headless_live/js.json and .cache/headless_live/table.md.
@@ -34,7 +33,7 @@ const opt = (name, def) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : def;
 };
-const IFACES = opt('ifaces', 'motion,keypoint').split(',');
+const IFACES = opt('ifaces', 'motion').split(',');
 const LOOPS = Number(opt('loops', 2));
 const TOL = Number(opt('tol', 0.03));
 const json = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -143,7 +142,6 @@ for (const iface of IFACES) {
   for (const x of rows.filter((r) => r.iface === iface)) {
     const p = py(x.robot, iface, x.clip);
     const gap = p ? x.jointErrPyWindow - p.joint_err_rms_rad : null;
-    // Pass/fail is on the motion interface; keypoint figures are reported only.
     const bad = iface === 'motion' && (x.falls > 0 || (gap != null && Math.abs(gap) > TOL));
     failed ||= bad;
     lines.push(`| ${x.label} | ${x.robot} | ${x.falls} | ${f3(x.jointErrPyWindow)} | ${f3(p?.joint_err_rms_rad)} | ${gap == null ? 'n/a' : (gap >= 0 ? '+' : '') + gap.toFixed(3)}${bad ? ' **FAIL**' : ''} | ${p ? p.falls : 'n/a'} | ${f3(x.jointErr)} | ${f3(x.endDrift)} | ${f3(x.travelAlong)} / ${f3(x.travelAcross)} | ${p ? `${f3(p.travel_along_m)} / ${f3(p.travel_across_m)}` : 'n/a'} | ${x.rtf.toFixed(2)} |`);
@@ -154,7 +152,7 @@ const gapsOf = (iface) => rows.filter((x) => x.iface === iface).map((x) => [x, p
   .filter(([, p]) => p).map(([x, p]) => x.jointErrPyWindow - p.joint_err_rms_rad);
 const summary = [
   `runs: ${rows.length / 3} (x 3 robots), sim ${simTotal.toFixed(0)} s in ${totalWall.toFixed(0)} s wall: real-time factor ${(simTotal / totalWall).toFixed(2)} (3 robots, unthrottled)`,
-  `falls: motion ${rows.filter((r) => r.iface === 'motion').reduce((a, r) => a + r.falls, 0)}, keypoint ${rows.filter((r) => r.iface === 'keypoint').reduce((a, r) => a + r.falls, 0)}`,
+  `falls: motion ${rows.filter((r) => r.iface === 'motion').reduce((a, r) => a + r.falls, 0)}`,
   ...IFACES.map((iface) => {
     const gaps = gapsOf(iface);
     return gaps.length ? `${iface}: joint error JS - Python over ${gaps.length} clip/robot pairs: mean ${mean(gaps).toFixed(4)}, `

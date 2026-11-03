@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  GOAL_K, History, PROPRIO_DIM, PolicyInputs, Robot, STATE_DIM, axisAngleQuat, goalKeypoint, goalMotion,
+  GOAL_K, History, PROPRIO_DIM, PolicyInputs, Robot, STATE_DIM, axisAngleQuat, goalMotion,
   heading, quatApplyInverse, quatInv, quatMul, referenceWindow, rot6d, yawQuat,
 } from '../src/live/obs.js';
 import {
@@ -39,7 +39,7 @@ const clip = (frames, yaw0 = 0) => {
 function toySpec(stand = state(0.1, 0.2, 0.3)) {
   const n = 29;
   return {
-    name: 'toy', kpGoalVersion: 2,
+    name: 'toy',
     jointNames: Array.from({ length: n }, (_, i) => `j${i}`),
     defaultJointPos: Array.from({ length: n }, (_, i) => 0.1 * i),
     actionScale: Array(n).fill(0.5),
@@ -144,11 +144,7 @@ test('goals are position-free: a window moved in the plane gives the same goals'
   const moved = turnStates(w, 0, [-3, 4]);
   const anchor = zq(0.3);
   close(goalMotion(moved, anchor), goalMotion(w, anchor), 1e-6);
-  close(goalKeypoint(moved, anchor), goalKeypoint(w, anchor), 1e-6);
   assert.equal(goalMotion(w, anchor).length, GOAL_K * 67);
-  const kp = goalKeypoint(w, anchor);
-  assert.equal(kp.length, GOAL_K * 45);
-  close(kp.subarray(0, 2), [0, 0], 1e-7); // frame-0 pelvis at the origin
 });
 
 test('stand reference: the stand turned to the robot heading at the first step', () => {
@@ -257,14 +253,13 @@ test('clip states from the packed buffer, float32 -> float64', () => {
   assert.equal(s[0], STATE_DIM * 0.5);
 });
 
-test('policy inputs: history and reference restart when the step goes back; masks', () => {
+test('policy inputs: history and reference restart when the step goes back', () => {
   const robot = new Robot(toySpec());
   const inputs = new PolicyInputs(robot, new LoopReference(robot, clip(5), LOOP), { historyLen: 2 });
   const meas = (v) => [[1, 0, 0, 0], [0, 0, v], new Float64Array(29).fill(v), new Float64Array(29)];
   let x = inputs.step(0, ...meas(1));
   assert.equal(x.obs_history.length, 2 * PROPRIO_DIM);
-  assert.deepEqual(Array.from(x.kp_point_mask), [1, 1, 1, 1, 1]);
-  assert.deepEqual(Array.from(x.kp_frame_mask), Array(GOAL_K).fill(1));
+  assert.deepEqual(Object.keys(x), ['obs_history', 'goal_motion']);
   inputs.setAction(new Float32Array(29).fill(0.25));
   x = inputs.step(1, ...meas(2));
   assert.equal(x.obs_history[PROPRIO_DIM + 92], 0.25); // the last action, newest frame
@@ -275,6 +270,4 @@ test('policy inputs: history and reference restart when the step goes back; mask
   // The IMU quaternion is normalised first.
   const y = inputs.step(1, [0, 2, 0, 0], [0, 0, 3], new Float64Array(29).fill(3), new Float64Array(29));
   close(y.obs_history.subarray(PROPRIO_DIM + 61, PROPRIO_DIM + 64), [0, 0, 1], 1e-7); // upside down
-  const h = new PolicyInputs(robot, new StandReference(robot), { kpHorizon: 3 });
-  assert.deepEqual(Array.from(h.step(0, ...meas(1)).kp_frame_mask), [1, 1, 1, 0, 0, 0, 0, 0, 0, 0]);
 });

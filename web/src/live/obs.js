@@ -6,8 +6,6 @@
 // - goalMotion: the 670-value motion goal (goal version 2): reference joints, the reference
 //   anchor path in its own heading frame, the reference anchor orientation relative to the
 //   robot's anchor.
-// - goalKeypoint: the 450 five-point features, positions in the reference pelvis heading frame,
-//   orientations relative to the robot's slot-0 (pelvis) orientation.
 //
 // Quaternions are wxyz. Reference states are flat Float64Arrays of frames x 240 values:
 // [q 29 | qd 29 | pos 14x3 | quat 14x4 | lin 14x3 | ang 14x3]. Everything is computed in double
@@ -18,7 +16,8 @@ export const NUM_BODIES = 14;
 export const GOAL_K = 10;
 export const ROOT_IDX = 0;
 export const ANCHOR_IDX = 7;
-export const KP_BODY_IDX = [0, 3, 6, 10, 13]; // pelvis, left/right ankle, left/right wrist
+// pelvis, left/right ankle, left/right wrist: the five-point overlay's targets (reference.js)
+export const KP_BODY_IDX = [0, 3, 6, 10, 13];
 export const NUM_KP = KP_BODY_IDX.length;
 export const PROPRIO_DIM = 93;
 export const STATE_DIM = 240;
@@ -116,7 +115,6 @@ export class Robot {
     this.perm = Int32Array.from(spec.perm); // native index of each canonical slot
     this.sign = Float64Array.from(spec.sign);
     this.offset = Float64Array.from(spec.offset);
-    this.kpGoalVersion = spec.kpGoalVersion ?? 1;
     const fk = spec.fk;
     this.fkParent = fk.parent;
     this.fkQuat = fk.quat.map((q) => Float64Array.from(q));
@@ -256,40 +254,6 @@ export function goalMotion(ref, robotAnchorQuat) {
   return out;
 }
 
-/** Five-point features [K * 45] from `ref` [K * 240] (keypoints.keypoint_features, no
- * jitter): positions in the reference pelvis heading frame of frame 0, orientations relative
- * to the robot pelvis's full orientation (version 2) or its heading only (version 1). */
-export function goalKeypoint(ref, robotSlot0Quat, version = 2) {
-  if (version !== 1 && version !== 2) throw new Error(`unknown five-point goal version ${version}`);
-  const K = ref.length / STATE_DIM;
-  const out = new Float32Array(K * NUM_KP * 9);
-  const refYaw = yawQuat(bodyQuat(ref, 0, KP_BODY_IDX[0]));
-  const o = bodyPos(ref, 0, KP_BODY_IDX[0]);
-  const ox = ref[o], oy = ref[o + 1];
-  const inv = quatInv(version === 1 ? yawQuat(robotSlot0Quat) : robotSlot0Quat);
-  const v = new Float64Array(3);
-  const p = new Float64Array(3);
-  const rel = new Float64Array(4);
-  const r6 = new Float64Array(6);
-  for (let k = 0; k < K; k++) {
-    for (let n = 0; n < NUM_KP; n++) {
-      const b = KP_BODY_IDX[n];
-      const f = (k * NUM_KP + n) * 9;
-      const a = bodyPos(ref, k, b);
-      v[0] = ref[a] - ox;
-      v[1] = ref[a + 1] - oy;
-      v[2] = ref[a + 2] - 0;
-      quatApplyInverse(refYaw, v, p);
-      out[f] = p[0];
-      out[f + 1] = p[1];
-      out[f + 2] = p[2];
-      rot6d(quatMul(inv, bodyQuat(ref, k, b), rel), r6);
-      for (let i = 0; i < 6; i++) out[f + 3 + i] = r6[i];
-    }
-  }
-  return out;
-}
-
 /** Reference states of frames frame .. frame + k - 1 [k * 240], held at the clip's last frame
  * (MotionLibrary.future). */
 export function referenceWindow(states, frame, k = GOAL_K) {
@@ -309,18 +273,14 @@ export function referenceWindow(states, frame, k = GOAL_K) {
  * canonical action [29], the next frame's last action.
  */
 export class PolicyInputs {
-  constructor(robot, reference, { historyLen = 10, kpHorizon = GOAL_K, kpVersion = robot.kpGoalVersion } = {}) {
-    if (!(kpHorizon >= 1 && kpHorizon <= GOAL_K)) throw new Error(`kpHorizon must be in 1..${GOAL_K}`);
+  constructor(robot, reference, { historyLen = 10 } = {}) {
     this.robot = robot;
     this.reference = reference;
-    this.kpVersion = kpVersion;
     this.history = new History(historyLen);
     this.lastAction = new Float64Array(NUM_JOINTS);
     this.prevStep = -1;
     this.lastWindow = null;
     this.frame = new Float32Array(PROPRIO_DIM);
-    this.kpPointMask = new Uint8Array(NUM_KP).fill(1);
-    this.kpFrameMask = Uint8Array.from({ length: GOAL_K }, (_, k) => (k < kpHorizon ? 1 : 0));
   }
 
   reset() {
@@ -330,9 +290,8 @@ export class PolicyInputs {
 
   /**
    * The ONNX inputs for control step `stepId` (steps since the robot's last reset; a lower one
-   * than before restarts the history and the reference): obs_history [historyLen * 93],
-   * goal_motion [670], goal_keypoint [450] (Float32Array), kp_point_mask [5] and kp_frame_mask
-   * [10] (Uint8Array, the ONNX bools). obs_history is reused by the next step.
+   * than before restarts the history and the reference): obs_history [historyLen * 93] and
+   * goal_motion [670] (Float32Array). obs_history is reused by the next step.
    */
   step(stepId, imuQuat, gyro, q, dq, cues = 0) {
     if (stepId < this.prevStep) {
@@ -349,9 +308,6 @@ export class PolicyInputs {
     return {
       obs_history: obs,
       goal_motion: goalMotion(ref, this.robot.anchorQuat(quat, q)),
-      goal_keypoint: goalKeypoint(ref, this.robot.slot0Quat(quat, q), this.kpVersion),
-      kp_point_mask: this.kpPointMask,
-      kp_frame_mask: this.kpFrameMask,
     };
   }
 

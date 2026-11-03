@@ -2,14 +2,15 @@
 
   uv run --group export python web/tools/record_clips.py --deploy <deploy_dir> \\
     --assets <assets_dir> --clips <clip> ... --robots g1 x2 t2 \\
-    --interfaces motion keypoint --out <out_dir>
+    --interfaces motion --out <out_dir>
 
 Runs the unchanged launcher `deploy.run` on a plain clip (no `--from-stand`, so the sim
 starts in the clip's first pose and `sim_node.run` plays it) and wraps `Tracker.record`,
 which sees the sim after reset (frame 0) and after every control step. Writes
 `<out>/<clip>/<robot>_<interface>.npy` (float64 [frames, nq]) and `.json` (the sim2sim
 summary plus `nq`, `frames`). `<deploy_dir>` is an `export_onnx.py` folder and
-`<assets_dir>` an `export_assets.py` folder.
+`<assets_dir>` an `export_assets.py` folder. A robot the export names `<body>_<variant>`
+(the released policy's g1_amber) is recorded under the page's name (`gen_live_assets.POLICY_ROBOT`).
 Runs are strictly sequential: parallel runs collide on the ZMQ ports.
 """
 
@@ -29,6 +30,7 @@ import numpy as np  # noqa: E402
 
 from deploy import run as sim_run  # noqa: E402
 from deploy.sim2sim import sim_node  # noqa: E402
+from web.tools.gen_live_assets import POLICY_ROBOT  # noqa: E402
 
 DROPPED_KEYS = ("states", "ghost_qpos", "init_qpos")
 
@@ -78,15 +80,15 @@ def main() -> None:
   parser.add_argument("--assets", type=Path, required=True)
   parser.add_argument("--clips", nargs="+", required=True)
   parser.add_argument("--robots", nargs="+", default=["g1", "x2", "t2"])
-  parser.add_argument("--interfaces", nargs="+", default=["motion", "keypoint"],
-                      choices=["motion", "keypoint"])
+  parser.add_argument("--interfaces", nargs="+", default=["motion"], choices=["motion", "human"])
   parser.add_argument("--out", type=Path, required=True)
   args = parser.parse_args()
   for clip in args.clips:
     for robot in args.robots:
       for interface in args.interfaces:
         qpos, summary = record_one(args.deploy, args.assets, robot, clip, interface)
-        write_recording(args.out, clip, robot, interface, qpos, summary)
+        page = {v: k for k, v in POLICY_ROBOT.items()}.get(robot, robot)
+        write_recording(args.out, clip, page, interface, qpos, summary)
         print(f"[record] {clip} {robot} {interface}: {summary['result']}, "
               f"{summary['frames']} frames", flush=True)
 

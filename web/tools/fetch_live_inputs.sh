@@ -25,7 +25,7 @@ DANCE=victory_dance_robot_dance_180_R_003__A306
 BASE_CLIPS="walking_random_direction_R_001__A432 dance_basic_padeburee_270_R_loop_001__A324 dance_basic_turn_v1_360_R_loop_001__A325 dance_hiphop_shuffle_sequence_v_001_R_003__A306 dance_hiphop_hip_hop_i_R_001__A313 dance_latino_jive_sequence_R_002__A313 dance_macarena_003__A467 dance_western_ridding_alone_R_003__A306 dancing_routine_V002_002__A365"
 
 mkdir -p "$OUT/policy"
-rsync -a --include='policy.onnx' --include='g1.json' --include='x2.json' --include='t2.json' \
+rsync -a --include='policy.onnx' --include='g1.json' --include='g1_amber.json' --include='x2.json' --include='t2.json' \
   --include='SHA256SUMS' --exclude='*' "$HOST:$SM_LIVE_POLICY/" "$OUT/policy/"
 (cd "$OUT/policy" && sha256sum -c --quiet SHA256SUMS)
 

@@ -1,7 +1,7 @@
 // Replays tools/xcheck_live.py's recorded sim2sim ticks through the JS policy side
 // (src/live/obs.js, src/live/reference.js) and compares every policy input with the one the
-// Python policy node fed its ONNX: obs_history, goal_motion, goal_keypoint and the two
-// five-point masks, plus the reference phase and the window's five points. Exits 1 if any
+// Python policy node fed its ONNX (obs_history, goal_motion: the page runs the motion
+// interface only), plus the reference phase and the window's five points. Exits 1 if any
 // tensor differs by more than 1e-5, a phase differs, or a run is missing. It also checks the
 // native joint targets the JS makes from each recorded action (Robot.targets).
 //
@@ -30,11 +30,11 @@ function clipStates(id, robot) {
   return statesFromClip(clipBuffers.get(id), entry.robots[robot], clips.columns);
 }
 
-const TENSORS = ['obs_history', 'goal_motion', 'goal_keypoint', 'kp_point_mask', 'kp_frame_mask', 'kp', 'targets'];
+const TENSORS = ['obs_history', 'goal_motion', 'kp', 'targets'];
 // The ONNX inputs are float32: the dump prints them with 9 significant digits, which round
 // back to the same float32. `kp` (the window's points) and `targets` (the native joint targets
 // from the action) are float64, printed exactly.
-const FLOAT32 = new Set(['obs_history', 'goal_motion', 'goal_keypoint']);
+const FLOAT32 = new Set(['obs_history', 'goal_motion']);
 // [max |diff|, elements not bit-identical]
 const compare = (got, want, f32) => {
   if (got.length !== want.length) return [Infinity, Math.max(got.length, want.length)];
@@ -53,7 +53,7 @@ let failed = false;
 let worst = 0;
 const lines = [];
 for (const spec of live.robots) {
-  for (const iface of ['motion', 'keypoint']) {
+  for (const iface of ['motion']) {
     const file = `.cache/xcheck_live/${spec.name}_${iface}.json`;
     if (!existsSync(path(file))) {
       console.error(`MISSING ${file}: run tools/xcheck_live.py first`);
@@ -66,7 +66,7 @@ for (const spec of live.robots) {
       leadInS: live.loop.leadInS, returnS: live.loop.returnS, holdS: live.loop.holdS,
       firstCueS: run.firstCueS, fps: live.fps,
     });
-    const inputs = new PolicyInputs(robot, ref, { historyLen: live.historyLen, kpHorizon: live.goalK });
+    const inputs = new PolicyInputs(robot, ref, { historyLen: live.historyLen });
     const max = Object.fromEntries(TENSORS.map((t) => [t, 0]));
     const differ = Object.fromEntries(TENSORS.map((t) => [t, 0]));
     let elements = 0;

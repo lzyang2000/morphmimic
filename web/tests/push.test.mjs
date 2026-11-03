@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LiveSim, pushForce } from '../src/live/sim.js';
+import { LiveSim, dcTorque, pushForce } from '../src/live/sim.js';
 
 const CAP = 100; // N: the hard cap the page never shows
 const LIVE = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'public/live');
@@ -214,4 +214,13 @@ test('headless: the G1 pushed sideways at the cap for 0.3 s while it stands', { 
   } finally {
     sim.dispose();
   }
+});
+
+test('dcTorque: the PD clipped by the torque-speed curve, mjlab and Booster laws (SimRobot.dc_torque)', () => {
+  // kp 10, kd 1, limit 5, sat 8, vmax 2, target 1, q 0.
+  const at = (law, qd) => dcTorque(law, 10, 1, 5, 8, 2, 1, 0, qd);
+  assert.equal(at('mjlab', 1), 4); // PD 9, upper sat (1 - 0.5) = 4
+  assert.equal(at('booster', 1), 4); // bound sat (1 - 0.5) = 4
+  assert.equal(at('mjlab', -3), 5); // PD 13: braking side, held at the limit
+  assert.equal(at('booster', -3), 0); // past vmax the Booster bound is 0 both ways
 });

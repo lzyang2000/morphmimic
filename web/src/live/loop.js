@@ -65,7 +65,7 @@ export class LiveLoop {
    * sim: a LiveSim (or the same interface); policy: {act(robotIdx, inputs, iface) -> Promise of
    * Float32Array(29)}; specs: robots.json's `robots` (same order as the sim's robots);
    * clips: per robot, the starting clip's states (Float64Array [T * 240]); options: iface
-   * ('motion' | 'keypoint'), clipId (a label for the starting clip, reported by status()),
+   * ('motion'), clipId (a label for the starting clip, reported by status()),
    * loop ({leadInS, returnS, holdS}), fps, historyLen, maxCatchUp, rehome ({spread (m), fadeS},
    * or null for none). The robots' home stands are where the sim has them now.
    */
@@ -256,9 +256,9 @@ export class LiveLoop {
     }
   }
 
-  /** 'motion' or 'keypoint', from the next control step on. */
+  /** 'motion' (the only interface the page's policy has), from the next control step on. */
   setInterface(iface) {
-    if (iface !== 'motion' && iface !== 'keypoint') throw new Error(`interface must be motion or keypoint, got ${iface}`);
+    if (iface !== 'motion') throw new Error(`interface must be motion, got ${iface}`);
     this.iface = iface;
   }
 

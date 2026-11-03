@@ -19,7 +19,7 @@
 //   says "Press Restart"). Pause and resume still toggle the loop's clock meanwhile, but run nothing.
 
 const COMMANDS = new Set(['setClip', 'setInterface', 'pause', 'resume', 'restart', 'perturb', 'perturbEnd']);
-const INTERFACES = new Set(['motion', 'keypoint']);
+const INTERFACES = new Set(['motion']);
 export const SLOW_RTF = 0.95; // a rate window under this runs below real time
 export const SLOW_CATCH_UP = 2; // the catch-up cap while it does
 
@@ -107,7 +107,7 @@ export class Driver {
   }
 
   setInterface({ iface }) {
-    if (!INTERFACES.has(iface)) throw new Error(`no interface ${JSON.stringify(iface)}: expected motion or keypoint`);
+    if (!INTERFACES.has(iface)) throw new Error(`no interface ${JSON.stringify(iface)}: expected motion`);
     this.whenIdle(() => this.loop.setInterface(iface));
   }
 
@@ -182,7 +182,7 @@ export class Driver {
     try {
       if (!this.loop.paused && !this.halted) {
         // A frame after every control step, not one per tick: a slow device that runs several
-        // steps in a tick still sends every pose (and the five-point trail every target).
+        // steps in a tick still sends every pose.
         const ran = await this.loop.tick(this.now(), () => this.postFrame());
         if (ran > 0) this.measureRate();
       }

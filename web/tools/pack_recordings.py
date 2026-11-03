@@ -7,7 +7,7 @@ Reads <cache>/recordings/<clip>/<robot>_<interface>.{npy,json} and <cache>/polic
 ([frames, nq] row-major, one per available robot/interface) at the byte `offset`s in the index.
 
 Every recording is aligned so the robot starts at frame 0 facing +x at world y = lateral
-offset (G1 -1.5, X2 0, T2 +1.5). Only the simulated qpos is shipped, never reference data.
+offset (X2 -1.5, G1 0, T2 +1.5: on screen X2 left, G1 middle, T2 right). Only the simulated qpos is shipped, never reference data.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ DEFAULT_OUT = WEB / "public"
 
 FPS = 50
 ROBOTS = ("g1", "x2", "t2")
-INTERFACES = ("motion", "keypoint")
-LATERAL = {"g1": -1.5, "x2": 0.0, "t2": 1.5}
+INTERFACES = ("motion",)
+LATERAL = {"g1": 0.0, "x2": -1.5, "t2": 1.5}
 
 # (id, label) in sidebar order.
 CLIPS = (

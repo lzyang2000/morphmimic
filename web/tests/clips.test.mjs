@@ -2,7 +2,7 @@
 // first 156 of 240); statesFromClip (src/live/reference.js) fills the body velocities with zeros.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GOAL_K, LIN, STATE_DIM, goalKeypoint, goalMotion } from '../src/live/obs.js';
+import { GOAL_K, LIN, STATE_DIM, goalMotion } from '../src/live/obs.js';
 import { statesFromClip } from '../src/live/reference.js';
 
 // Deterministic pseudo-random numbers.
@@ -71,5 +71,4 @@ test('the goals do not read the dropped columns: same goals with and without the
   const kept = Float64Array.from(s, Math.fround);
   const anchor = unitQuat(rng(4));
   assert.deepEqual(goalMotion(zeroed, anchor), goalMotion(kept, anchor));
-  for (const v of [1, 2]) assert.deepEqual(goalKeypoint(zeroed, anchor, v), goalKeypoint(kept, anchor, v));
 });

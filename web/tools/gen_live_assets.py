@@ -2,15 +2,15 @@
 
   uv run --project .. --group export python tools/gen_live_assets.py [--cache DIR] [--out DIR]
 
-Reads <cache>/assets/{g1,x2,t2}.xml (the exported robot scenes) and <cache>/live/ (from
+Reads <cache>/assets/{g1_amber,x2,t2}.xml (the exported robot scenes) and <cache>/live/ (from
 tools/fetch_live_inputs.sh: policy/{policy.onnx,<robot>.json}, clips/<robot>/<clip>.npz), plus
 deploy/sim2sim/robots/<robot>.json and deploy/vr_teleop/gmr_configs/stand.json. Writes
 <out>/live/:
 
   scene.xml    one MuJoCo model for the physics: each robot's bodies, joints, actuators (the
                built-in position PD of its exported scene), contact excludes and collision geoms,
-               prefixed g1/ x2/ t2/, placed at the lateral offsets of the recordings (G1 -1.5,
-               X2 0, T2 +1.5 m), and one floor. Visual geoms, sensors, keyframes, lights and
+               prefixed g1/ x2/ t2/, placed at the lateral offsets of the recordings (X2 -1.5,
+               G1 0, T2 +1.5 m), and one floor. Visual geoms, sensors, keyframes, lights and
                materials are left out; collision meshes are written inline as the vertices of
                their convex hulls (what MuJoCo collides), and every body keeps the inertia its
                single-robot model compiled to. Robot i's geoms have contype = conaffinity = bit
@@ -18,14 +18,18 @@ deploy/sim2sim/robots/<robot>.json and deploy/vr_teleop/gmr_configs/stand.json. 
                its own scene, never another robot.
   scene.json   the robot side (deploy/sim2sim/sim_node.py): physics timestep and decimation,
                the fall check, and per robot its qpos/qvel/ctrl blocks, native joint -> qpos and
-               dof addresses, actuator -> native joint, gains and ctrl ranges, the IMU body (its
-               orientation and gyro, as sim_node reads them) and the qpos of the neutral stand.
+               dof addresses, actuator -> native joint, ctrl ranges, the DC motors (`dc`: per
+               actuator whether it is a torque actuator and the constants of the explicit PD
+               and torque-speed curve SimRobot.dc_torque computes for it; null without), the
+               IMU body (its orientation and gyro, as sim_node reads them) and the qpos of the
+               neutral stand.
   robots.json  the policy side (deploy/sim2sim/obs.py, policy_node.py): per robot the ONNX
                normalisers and morphology vector, joint maps, default pose, action scale, the
                kinematic tree for the anchor and slot-0 orientations, and the stand state;
                and `policy` {file, bytes, sha256} of policy.onnx (the page's download progress
                uses bytes when the server sends no content-length).
-  policy.onnx  the shared policy, copied.
+  policy.onnx  the shared policy cut down to its motion output (`action_motion`) and the
+               inputs that reads (policy_node.pruned): the page runs the motion interface only.
   clips.json   {fps, stateDim: 240, columns: 156, clips: [{id, label, robots: {<robot>:
                {offset, frames}}}]} in sidebar order, and
   clips/<id>.bin  per clip the robots' reference states, float32 little-endian
@@ -61,6 +65,10 @@ DEFAULT_CACHE = WEB / ".cache"
 DEFAULT_OUT = WEB / "public"
 BAKED_DIR = REPO / "deploy" / "sim2sim" / "robots"
 STAND_FILE = REPO / "deploy" / "vr_teleop" / "gmr_configs" / "stand.json"
+
+# The page's robot (prefix in the scene, clip folder) -> the robot the policy export and the
+# exported scene name: the G1 slot is the G1 body with the released policy's actuators.
+POLICY_ROBOT = {"g1": "g1_amber"}
 
 STATE_DIM = 240
 # The state columns the goals read (obs.js): everything before the body velocities (LIN = 156).
@@ -152,7 +160,7 @@ def build_scene(assets: Path) -> tuple[mujoco.MjSpec, mujoco.MjModel]:
   combined.compiler.degree = False
   parts = []
   for i, (name, _) in enumerate(ROBOTS):
-    parts.append(physics_spec(assets / f"{name}.xml", 1 << (i + 1)))
+    parts.append(physics_spec(assets / f"{POLICY_ROBOT.get(name, name)}.xml", 1 << (i + 1)))
   first = parts[0][1]
   for _, src in parts[1:]:
     for f in OPTION_FIELDS:
@@ -192,8 +200,9 @@ def scene_meta(model: mujoco.MjModel, assets: Path) -> dict:
   stand = json.loads(STAND_FILE.read_text())
   robots, timing = [], set()
   for name, label in ROBOTS:
-    robot = Robot.load(name, BAKED_DIR)
-    single = SimRobot(assets / f"{name}.xml", robot)  # checks the timestep against the constants
+    robot = Robot.load(POLICY_ROBOT.get(name, name), BAKED_DIR)
+    # checks the timestep against the constants, and finds the DC motors
+    single = SimRobot(assets / f"{robot.name}.xml", robot)
     timing.add((robot.physics_dt, robot.decimation))
     p = f"{name}/robot/"
     free = model.joint(p + "floating_base_joint")
@@ -205,7 +214,7 @@ def scene_meta(model: mujoco.MjModel, assets: Path) -> dict:
     imu = model.body(p + robot.imu_body).id
     sites = [model.site(s).name for s in range(model.nsite)
              if model.site_bodyid[s] == imu and "imu" in model.site(s).name]
-    q = stand_qpos(single.model, single, stand[name])
+    q = stand_qpos(single.model, single, stand[robot.body])
     q[1] += LATERAL[name]
     robots.append({
         "name": name, "label": label, "lateral": LATERAL[name],
@@ -217,8 +226,7 @@ def scene_meta(model: mujoco.MjModel, assets: Path) -> dict:
         "jointDofadr": [int(j.dofadr[0]) for j in joints],
         "actNative": [jid[int(model.actuator_trnid[a, 0])] for a in acts],
         "ctrlRange": model.actuator_ctrlrange[acts].tolist(),
-        "kp": model.actuator_gainprm[acts, 0].tolist(),
-        "kd": (-model.actuator_biasprm[acts, 2]).tolist(),
+        "dc": dc_meta(single),
         "imuBody": p + robot.imu_body, "imuBodyId": int(imu),
         "imuSite": sites[0] if sites else None,
         "trackedBodyIds": [int(model.body(p + b).id) for b in robot.tracked_bodies],
@@ -238,10 +246,24 @@ def scene_meta(model: mujoco.MjModel, assets: Path) -> dict:
   }
 
 
+def dc_meta(single) -> dict | None:
+  """SimRobot's DC motors per actuator (`motor` 0/1; kp, kd, limit, sat, vmax, 0 off the motors)
+  and the torque-speed law; None when the robot has none."""
+  if not single.motor.any():
+    return None
+  _, _, kp, kd, limit, sat, vmax = single._dc
+  out = {"motor": single.motor.astype(int).tolist(), "law": single._dc_law}
+  for key, v in (("kp", kp), ("kd", kd), ("limit", limit), ("sat", sat), ("vmax", vmax)):
+    full = np.zeros(single.model.nu)
+    full[single.motor] = v
+    out[key] = full.tolist()
+  return out
+
+
 def policy_meta(policy_dir: Path) -> dict:
   import onnxruntime as ort
 
-  from deploy.sim2sim.obs import GOAL_K, KP_BODY_IDX, PROPRIO_DIM
+  from deploy.sim2sim.obs import BODIES, GOAL_K, PROPRIO_DIM
   from deploy.sim2sim.policy_node import REFERENCE_LEAD
   from deploy.vr_teleop.constants import STAND_BLEND_S
 
@@ -252,15 +274,17 @@ def policy_meta(policy_dir: Path) -> dict:
   stand = json.loads(STAND_FILE.read_text())
   runs, robots = set(), []
   for name, _ in ROBOTS:
-    doc = json.loads((policy_dir / f"{name}.json").read_text())
+    policy_robot = POLICY_ROBOT.get(name, name)
+    doc = json.loads((policy_dir / f"{policy_robot}.json").read_text())
     runs.add((doc["run"], doc["iteration"], doc["goal_version"]))
+    if doc.get("goal_anchor", "reference") != "reference":
+      raise ValueError(f"{name}: the page builds reference-anchored motion goals only")
     r, inp, fk = doc["robot"], doc["inputs"], doc["robot"]["fk"]
     robots.append({
         "name": name,
-        "kpGoalVersion": int(doc.get("kp_goal_version", 1)),
         "inputs": {"obsMean": inp["obs_mean"], "obsVar": inp["obs_var"],
                    "goalMean": inp["goal_mean"], "goalVar": inp["goal_var"],
-                   "kpMean": inp["kp_mean"], "kpVar": inp["kp_var"], "morph": inp["morph"]},
+                   "morph": inp["morph"]},
         "jointNames": r["native_joint_names"],
         "defaultJointPos": r["default_joint_pos"],
         "actionScale": r["action_scale"],
@@ -273,7 +297,7 @@ def policy_meta(policy_dir: Path) -> dict:
                "joints": [[{"native": j["native_index"], "axis": j["axis"], "ref": j["ref"]}
                            for j in b["joints"]] for b in fk["bodies"]],
                "slot0": fk["slot0"], "anchor": fk["anchor"], "imu": fk["imu"]},
-        "stand": {"state": stand[name]["state"]},
+        "stand": {"state": stand[BODIES.get(policy_robot, policy_robot)]["state"]},
     })
   if len(runs) != 1:
     raise ValueError(f"robot exports differ in run: {runs}")
@@ -281,7 +305,7 @@ def policy_meta(policy_dir: Path) -> dict:
   return {
       "run": run, "iteration": iteration, "goalVersion": goal_version,
       "proprioDim": PROPRIO_DIM, "historyLen": width // PROPRIO_DIM, "goalK": GOAL_K,
-      "stateDim": STATE_DIM, "kpIdx": list(KP_BODY_IDX), "referenceLead": REFERENCE_LEAD,
+      "stateDim": STATE_DIM, "referenceLead": REFERENCE_LEAD,
       "fps": FPS,
       "loop": {"leadInS": LEAD_IN_S, "returnS": STAND_BLEND_S, "holdS": HOLD_S},
       "robots": robots,
@@ -319,7 +343,12 @@ def build(cache: Path = DEFAULT_CACHE, out: Path = DEFAULT_OUT) -> dict:
     warnings.simplefilter("ignore")
     (dest / "scene.xml").write_text(spec.to_xml())
   (dest / "scene.json").write_text(json.dumps(scene_meta(model, assets), indent=1))
-  shutil.copyfile(live_in / "policy" / "policy.onnx", dest / "policy.onnx")
+  import onnx
+
+  from deploy.sim2sim.policy_node import pruned
+
+  (dest / "policy.onnx").write_bytes(
+      pruned(onnx.load(live_in / "policy" / "policy.onnx"), "action_motion"))
   meta = policy_meta(live_in / "policy")
   onnx = (dest / "policy.onnx").read_bytes()
   meta["policy"] = {"file": "policy.onnx", "bytes": len(onnx), "sha256": hashlib.sha256(onnx).hexdigest()}

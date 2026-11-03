@@ -6,7 +6,7 @@
 //   node tools/screenshot.mjs out.png [--width 1280] [--height 720] [--port 4317] [--dev]
 //       --dev serves the sources with the Vite dev server instead of dist/ with vite preview
 //   node tools/screenshot.mjs out.png --view N[,IFACE] [--at 6]
-//       clip N (0-based sidebar index) on IFACE (motion or keypoint, default motion), opened
+//       clip N (0-based sidebar index) on IFACE (motion, the only one the page has), opened
 //       with ?clip=N&iface=IFACE, captured once the sim has run --at seconds (default 6: the
 //       first cue is at 1 s and the lead-in takes 2 s, so 3 s into the clip)
 //   node tools/screenshot.mjs out.png --view N --query rehome=0.5 --rehomes 1

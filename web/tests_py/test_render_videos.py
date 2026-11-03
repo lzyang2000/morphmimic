@@ -17,7 +17,7 @@ class CameraAndShrinkTest(unittest.TestCase):
     import numpy as np
     n = 400
     recs = {}
-    for name, y in (("g1", -1.5), ("x2", 0.0), ("t2", 1.5)):
+    for name, y in (("g1", 0.0), ("x2", -1.5), ("t2", 1.5)):
       q = np.zeros((n, 36))
       q[:, 0] = np.linspace(0.0, 4.0, n)  # walking along x
       q[:, 1] = y

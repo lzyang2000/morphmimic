@@ -4,8 +4,8 @@
 //
 // Page -> worker:
 //   {type: 'init', base, clip, iface, rehomeSpread?}  base: absolute URL of the live/ folder
-//                                      (ends in '/'); clip: index into clips.json; iface: 'motion' |
-//                                      'keypoint'; rehomeSpread: the re-home threshold (m, default
+//                                      (ends in '/'); clip: index into clips.json; iface: 'motion' (the
+//                                      only interface); rehomeSpread: the re-home threshold (m, default
 //                                      2; loop.js). Accepted once.
 //   {type: 'setClip', clip}            from each robot's next cue on (the motion playing ends
 //                                      first); a clip not loaded yet is fetched first
@@ -23,17 +23,15 @@
 //                                      'clip'; bytes (total 0 when unknown; for the policy,
 //                                      robots.json's policy.bytes then); clip: its index
 //   {type: 'ready', robots: [{name, label, slot0}], bodies: [names], clips: [{id, label,
-//       frames}], fps, goalK, kpPoints, run, iteration}
-//       slot0: the robot's pelvis-equivalent body id (the five-point overlay is anchored there)
+//       frames}], fps, goalK, run, iteration}
+//       slot0: the robot's pelvis-equivalent body id
 //   {type: 'clip', clip}               a clip is loaded and queued for the next cue
-//   {type: 'frame', time, steps, rtf, rehoming, rehomes, poses, targets, status}
+//   {type: 'frame', time, steps, rtf, rehoming, rehomes, poses, status}
 //       time: sim seconds; steps: control steps since the start; rehoming: the robots are about
 //       to be put back on their home stands (loop.js); rehomes: how many times they were (the
 //       page fades out over the cut and back in); rtf: sim time over wall time
 //       while running, over the last ~2 s; poses: Float64Array [nbody * 7] (x, y, z, qw, qx, qy, qz
-//       per body id, bodies as in 'ready'); targets: Float64Array [robots * goalK * kpPoints * 3]
-//       (each robot's five-point targets: frame 0 the current one, then the preview; NaN before
-//       its first step); status: per robot {name, phase, clip, nextClip, stepId, falls, motions,
+//       per body id, bodies as in 'ready'); status: per robot {name, phase, clip, nextClip, stepId, falls, motions,
 //       jointErr} (clip and nextClip are clips.json indices)
 //   {type: 'error', stage, message, clip?}  stage: 'mujoco' | 'scene' | 'policy' | 'clip' |
 //       'run' | 'init' | a command name
@@ -54,15 +52,11 @@ let meta = null;
 const post = (msg, transfer) => self.postMessage(msg, transfer ?? []);
 
 function postFrame() {
-  const n = loop.robots.length;
-  const per = meta.goalK * meta.kpPoints * 3;
-  const targets = new Float64Array(n * per).fill(NaN);
-  for (let r = 0; r < n; r++) loop.fivePointTargets(r, targets.subarray(r * per, (r + 1) * per));
   const poses = sim.bodyPoses();
   post({
     type: 'frame', time: sim.time, steps: loop.steps, rtf: driver.rate.rtf, rehoming: loop.rehoming,
-    rehomes: loop.rehomes, poses, targets, status: loop.status(),
-  }, [poses.buffer, targets.buffer]);
+    rehomes: loop.rehomes, poses, status: loop.status(),
+  }, [poses.buffer]);
 }
 
 async function loadClip(i) {
@@ -93,7 +87,7 @@ async function stage(name, p) {
 
 async function init({ base, clip = 0, iface = 'motion', rehomeSpread = 2.0 }) {
   if (typeof base !== 'string' || !/\/$/.test(base)) throw new Error('init needs base, the URL of live/ ending in /');
-  if (iface !== 'motion' && iface !== 'keypoint') throw new Error(`no interface ${JSON.stringify(iface)}`);
+  if (iface !== 'motion') throw new Error(`no interface ${JSON.stringify(iface)}`);
   if (!(rehomeSpread > 0)) throw new Error(`rehomeSpread must be a positive number of metres, got ${JSON.stringify(rehomeSpread)}`);
   post({ type: 'progress', stage: 'mujoco', loaded: 0, total: 0 });
   const mujocoP = stage('mujoco', load_mujoco);
@@ -110,7 +104,7 @@ async function init({ base, clip = 0, iface = 'motion', rehomeSpread = 2.0 }) {
   const mujoco = await mujocoP;
   sim = await stage('mujoco', () => new LiveSim(mujoco, xml, scene));
   post({ type: 'progress', stage: 'mujoco', loaded: 1, total: 1 });
-  meta = { base, clipIndex, robots, goalK: robots.goalK, kpPoints: robots.kpIdx.length };
+  meta = { base, clipIndex, robots, goalK: robots.goalK };
 
   const policy = await stage('policy', () => browserPolicy(new URL('policy.onnx', base).href, robots.robots, {
     // robots.json records the file's size, for a server that sends no content-length.
@@ -129,7 +123,6 @@ async function init({ base, clip = 0, iface = 'motion', rehomeSpread = 2.0 }) {
     clips: clipIndex.clips.map((c) => ({ id: c.id, label: c.label, frames: c.robots[robots.robots[0].name].frames })),
     fps: robots.fps,
     goalK: meta.goalK,
-    kpPoints: meta.kpPoints,
     run: robots.run,
     iteration: robots.iteration,
   });
