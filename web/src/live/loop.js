@@ -65,18 +65,22 @@ export class LiveLoop {
    * sim: a LiveSim (or the same interface); policy: {act(robotIdx, inputs, iface) -> Promise of
    * Float32Array(29)}; specs: robots.json's `robots` (same order as the sim's robots);
    * clips: per robot, the starting clip's states (Float64Array [T * 240]); options: iface
-   * ('motion'), clipId (a label for the starting clip, reported by status()),
+   * ('motion', or 'full' / 'five': the human interface, which needs `human`, the starting clip's
+   * human frames [T * 168], and `humanStand`, the uniform skeleton's stand [168]; with them every
+   * robot's reference plays the human track too, whatever the interface), clipId (a label for
+   * the starting clip, reported by status()),
    * loop ({leadInS, returnS, holdS}), fps, historyLen, maxCatchUp, rehome ({spread (m), fadeS},
    * or null for none). The robots' home stands are where the sim has them now.
    */
   constructor(sim, policy, specs, clips, {
     iface = 'motion', clipId = null, loop = {}, fps = 50, historyLen = 10, maxCatchUp = 4,
-    rehome = { spread: 2.0, fadeS: 0.15 },
+    rehome = { spread: 2.0, fadeS: 0.15 }, human = null, humanStand = null,
   } = {}) {
     if (specs.length !== sim.numRobots) throw new Error(`${specs.length} robot specs for ${sim.numRobots} robots`);
     this.sim = sim;
     this.policy = policy;
-    this.iface = iface;
+    this.hasHuman = human !== null;
+    this.setInterface(iface);
     this.dtMs = 1000 / fps;
     this.maxCatchUp = maxCatchUp;
     this.clock = { t: null };
@@ -91,7 +95,7 @@ export class LiveLoop {
     this.robots = specs.map((spec, r) => {
       if (sim.robots && sim.robots[r].name !== spec.name) throw new Error(`robot ${r}: sim ${sim.robots[r].name}, policy ${spec.name}`);
       const robot = new Robot(spec);
-      const reference = new LoopReference(robot, clips[r], { ...loop, fps });
+      const reference = new LoopReference(robot, clips[r], { ...loop, fps, human, humanStand });
       return {
         name: spec.name,
         robot,
@@ -182,7 +186,7 @@ export class LiveLoop {
     for (let r = 0; r < robots.length; r++) {
       const R = robots[r];
       const m = R.meas;
-      const inputs = R.inputs.step(R.stepId, m.quat, m.gyro, m.q, m.dq);
+      const inputs = R.inputs.step(R.stepId, m.quat, m.gyro, m.q, m.dq, 0, this.iface);
       const action = await this.policy.act(r, inputs, this.iface);
       R.inputs.setAction(action);
       R.robot.targets(action, R.targets);
@@ -247,18 +251,21 @@ export class LiveLoop {
     this.clock.t = null; // the next tick starts the clock: paused time is not replayed
   }
 
-  /** The clip each robot plays from its next cue on (per robot states [T * 240]; `id` labels it
-   * in status()); the motion playing goes on to the stand first. */
-  setClip(clips, id = null) {
+  /** The clip every robot plays from its next cue on: `clip` {states: per robot [T * 240],
+   * human: its human frames [T * 168], needed with a human track}; `id` labels it in status().
+   * The motion playing goes on to the stand first. */
+  setClip({ states, human = null }, id = null) {
     for (let r = 0; r < this.robots.length; r++) {
-      this.robots[r].reference.setClip(clips[r]);
+      this.robots[r].reference.setClip(states[r], human);
       this.robots[r].nextClip = id;
     }
   }
 
-  /** 'motion' (the only interface the page's policy has), from the next control step on. */
+  /** 'motion', or the human interface with all 24 slots ('full') or five ('five'), from the next
+   * control step on. */
   setInterface(iface) {
-    if (iface !== 'motion') throw new Error(`interface must be motion, got ${iface}`);
+    if (iface !== 'motion' && iface !== 'full' && iface !== 'five') throw new Error(`interface must be motion, full or five, got ${iface}`);
+    if (iface !== 'motion' && !this.hasHuman) throw new Error('the human interface needs the clips\' human frames');
     this.iface = iface;
   }
 
@@ -271,6 +278,12 @@ export class LiveLoop {
     }
     this.rehomeArmed = false;
     this.rehoming = false;
+  }
+
+  /** Robot `r`'s human targets of its last window, [K * 24 * 3] world positions of the 24 SMPL
+   * slots (frame 0 the current target, then the preview), or null before its first step. */
+  humanTargets(r, out) {
+    return this.robots[r].reference.humanTargets(out);
   }
 
   /** Robot `r`'s five-point targets of its last window, [K * 5 * 3] world positions (frame 0

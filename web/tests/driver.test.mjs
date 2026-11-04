@@ -87,7 +87,7 @@ test('setClip and setInterface check their arguments', () => {
     assert.match(posted[0].message, /no clip/);
   }
   posted.length = 0;
-  d.handle({ type: 'setInterface', iface: 'five' });
+  d.handle({ type: 'setInterface', iface: 'keypoint' });
   assert.match(posted[0].message, /no interface/);
   d.handle({ type: 'bogus' });
   assert.match(posted.at(-1).message, /unknown message/);

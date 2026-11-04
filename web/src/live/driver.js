@@ -19,14 +19,15 @@
 //   says "Press Restart"). Pause and resume still toggle the loop's clock meanwhile, but run nothing.
 
 const COMMANDS = new Set(['setClip', 'setInterface', 'pause', 'resume', 'restart', 'perturb', 'perturbEnd']);
-const INTERFACES = new Set(['motion']);
+const INTERFACES = new Set(['motion', 'full', 'five']);
 export const SLOW_RTF = 0.95; // a rate window under this runs below real time
 export const SLOW_CATCH_UP = 2; // the catch-up cap while it does
 
 export class Driver {
   /**
    * post(msg): to the page. postFrame(): build and post a frame of the loop's state.
-   * loadClip(index) -> Promise of the clip's per-robot states. now(): ms clock.
+   * loadClip(index) -> Promise of the clip ({states: per robot, human}, LiveLoop.setClip's).
+   * now(): ms clock.
    * timers: {set(fn, ms) -> id, clear(id)}.
    */
   constructor({
@@ -107,7 +108,7 @@ export class Driver {
   }
 
   setInterface({ iface }) {
-    if (!INTERFACES.has(iface)) throw new Error(`no interface ${JSON.stringify(iface)}: expected motion`);
+    if (!INTERFACES.has(iface)) throw new Error(`no interface ${JSON.stringify(iface)}: expected motion, full or five`);
     this.whenIdle(() => this.loop.setInterface(iface));
   }
 

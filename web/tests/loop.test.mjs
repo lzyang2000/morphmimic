@@ -139,7 +139,7 @@ test('switch waits for the stand', async () => {
   await run(5 + 5 + 3); // the stand, the lead-in, 3 frames into clip A
   assert.equal(R.reference.phase, 'clip');
   assert.equal(loop.status()[0].clip, 'A');
-  loop.setClip([B], 'B');
+  loop.setClip({ states: [B] }, 'B');
   assert.equal(loop.status()[0].nextClip, 'B');
   const at = phases.length;
   await run(60);
@@ -190,7 +190,7 @@ test('fall resets one robot', async () => {
 test('after a fall the robot reports the clip its next cue plays', async () => {
   const { loop } = make(2, clip(30, 10), { falls: { 8: [1] }, clipId: 'A' });
   for (let i = 0; i < 7; i++) await loop.controlStep();
-  loop.setClip(Array(2).fill(clip(30, 500)), 'B');
+  loop.setClip({ states: Array(2).fill(clip(30, 500)) }, 'B');
   assert.deepEqual(loop.status().map((s) => [s.clip, s.nextClip]), [['A', 'B'], ['A', 'B']], 'A plays on');
   await loop.controlStep(); // robot 1 falls: its motion of A is gone, it stands until its cue plays B
   assert.deepEqual(loop.status().map((s) => [s.phase, s.clip]), [['lead', 'A'], ['stand', 'B']]);

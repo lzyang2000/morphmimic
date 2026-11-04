@@ -8,6 +8,10 @@ import {
   CuedClipReference, LoopReference, StandReference, anchorFivePoints, blendStates, fivePoints, placed,
   statesFromClip, turnStates,
 } from '../src/live/reference.js';
+import {
+  HUMAN_FIVE, HUMAN_FRAME_DIM, UNDO, headingFeatures, humanFeatures, humanHeading, humanWindow, placedHuman,
+  pointMask, turnHuman,
+} from '../src/live/human.js';
 
 const close = (a, b, tol = 1e-12, msg = '') => {
   assert.equal(a.length, b.length, `${msg} length`);
@@ -270,4 +274,51 @@ test('policy inputs: history and reference restart when the step goes back', () 
   // The IMU quaternion is normalised first.
   const y = inputs.step(1, [0, 2, 0, 0], [0, 0, 3], new Float64Array(29).fill(3), new Float64Array(29));
   close(y.obs_history.subarray(PROPRIO_DIM + 61, PROPRIO_DIM + 64), [0, 0, 1], 1e-7); // upside down
+});
+
+// A human frame: slot s at pelvis + (0.05 s along the heading, 0, -0.02 s), every slot facing
+// `yaw` in the robot's convention (its orientation times UNDO is zq(yaw)).
+function humanFrame(px, py, yaw) {
+  const f = new Float64Array(HUMAN_FRAME_DIM);
+  const q = quatMul(zq(yaw), quatInv(UNDO));
+  for (let s = 0; s < 24; s++) {
+    f.set([px + Math.cos(yaw) * 0.05 * s, py + Math.sin(yaw) * 0.05 * s, 0.9 - 0.02 * s], 7 * s);
+    f.set(q, 7 * s + 3);
+  }
+  return f;
+}
+const humanClip = (frames) => {
+  const out = new Float64Array(frames * HUMAN_FRAME_DIM);
+  for (let f = 0; f < frames; f++) out.set(humanFrame(1 + 0.02 * f, 2, 0.8 + 0.01 * f), f * HUMAN_FRAME_DIM);
+  return out;
+};
+
+test('human: placed frames face the yaw at `at`, the goal is position-free, the five-point mask', () => {
+  const p = placedHuman(humanClip(4), -0.4, [2, 3]);
+  close(p.subarray(0, 2), [2, 3], 1e-12);
+  assert.ok(Math.abs(humanHeading(p) + 0.4) < 1e-12);
+  const w = humanWindow(humanClip(12), 1);
+  const moved = turnHuman(w, 0, [-3, 4]);
+  for (const m of ['full', 'five']) close(humanFeatures(moved, pointMask(m)), humanFeatures(w, pointMask(m)), 1e-6, m);
+  assert.equal(humanFeatures(w, pointMask('full')).length, GOAL_K * 24 * 9);
+  assert.deepEqual([...pointMask('five')].flatMap((v, s) => (v ? [s] : [])), HUMAN_FIVE);
+  // Spine3 against a torso facing the same way: the identity.
+  close(headingFeatures(zq(0.8), humanWindow(humanClip(1), 0), pointMask('full')).subarray(0, 6), [1, 0, 0, 1, 0, 0], 1e-12);
+});
+
+test('loop reference: the human track plays in step with the robot clip, from the human stand', () => {
+  const robot = new Robot(toySpec());
+  const ref = new LoopReference(robot, clip(5), { ...LOOP, human: humanClip(5), humanStand: humanFrame(0, 0, 0) });
+  const inputs = new PolicyInputs(robot, ref, { historyLen: 2 });
+  const meas = [zq(1.0), [0, 0, 0], new Float64Array(29), new Float64Array(29)];
+  const phases = [];
+  for (let s = 0; s < 14; s++) {
+    const x = inputs.step(s, ...meas, 0, s % 2 ? 'five' : 'full');
+    assert.deepEqual(Object.keys(x), ['obs_history', 'goal_human', 'human_point_mask', 'human_frame_mask', 'human_heading', 'human_heading_mask']);
+    if (s === 0) assert.ok(Math.abs(humanHeading(ref.humanWindow) - heading(zq(1.0))) < 1e-12, 'the stand faces the robot');
+    phases.push(ref.phase);
+  }
+  assert.deepEqual(phases.slice(2, 12), ['lead', 'lead', 'clip', 'clip', 'clip', 'clip', 'clip', 'return', 'return', 'stand']);
+  assert.throws(() => ref.setClip(clip(6), humanClip(5)), /human frames 5, robot clip 6/);
+  assert.throws(() => new PolicyInputs(robot, new StandReference(robot)).step(0, ...meas, 0, 'full'), /human track/);
 });

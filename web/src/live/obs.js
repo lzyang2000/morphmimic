@@ -11,6 +11,8 @@
 // [q 29 | qd 29 | pos 14x3 | quat 14x4 | lin 14x3 | ang 14x3]. Everything is computed in double
 // precision and the policy tensors are rounded to float32 at the end, as obs.py does.
 
+import { headingFeatures, humanFeatures, pointMask } from './human.js';
+
 export const NUM_JOINTS = 29;
 export const NUM_BODIES = 14;
 export const GOAL_K = 10;
@@ -281,6 +283,9 @@ export class PolicyInputs {
     this.prevStep = -1;
     this.lastWindow = null;
     this.frame = new Float32Array(PROPRIO_DIM);
+    this.masks = { full: pointMask('full'), five: pointMask('five') };
+    this.humanFrameMask = new Uint8Array(GOAL_K).fill(1); // every frame seen (policy_node)
+    this.humanHeadingMask = Uint8Array.of(1);
   }
 
   reset() {
@@ -290,10 +295,14 @@ export class PolicyInputs {
 
   /**
    * The ONNX inputs for control step `stepId` (steps since the robot's last reset; a lower one
-   * than before restarts the history and the reference): obs_history [historyLen * 93] and
-   * goal_motion [670] (Float32Array). obs_history is reused by the next step.
+   * than before restarts the history and the reference) on interface `iface`: obs_history
+   * [historyLen * 93] and, on 'motion', goal_motion [670]; on the human interface ('full' or
+   * 'five', the slot setting) the reference's human window as policy_node._human_goal builds it:
+   * goal_human [K * 24 * 9], human_point_mask [24], human_frame_mask [K] (all seen),
+   * human_heading [K * 6] and human_heading_mask [1] (on). Floats are Float32Array, masks
+   * Uint8Array (the ONNX bools). obs_history is reused by the next step.
    */
-  step(stepId, imuQuat, gyro, q, dq, cues = 0) {
+  step(stepId, imuQuat, gyro, q, dq, cues = 0, iface = 'motion') {
     if (stepId < this.prevStep) {
       this.reset();
       this.reference.reset();
@@ -305,9 +314,18 @@ export class PolicyInputs {
     proprioFrame(this.robot, q, dq, quat, gyro, this.lastAction, this.frame);
     const obs = this.history.push(this.frame);
     const ref = (this.lastWindow = this.reference.window(stepId, quat, q));
+    if (iface === 'motion') return { obs_history: obs, goal_motion: goalMotion(ref, this.robot.anchorQuat(quat, q)) };
+    const mask = this.masks[iface];
+    if (!mask) throw new Error(`interface must be motion, full or five, got ${iface}`);
+    const human = this.reference.humanWindow;
+    if (!human) throw new Error('the human interface needs a reference with a human track');
     return {
       obs_history: obs,
-      goal_motion: goalMotion(ref, this.robot.anchorQuat(quat, q)),
+      goal_human: humanFeatures(human, mask),
+      human_point_mask: mask,
+      human_frame_mask: this.humanFrameMask,
+      human_heading: headingFeatures(this.robot.anchorQuat(quat, q), human, mask),
+      human_heading_mask: this.humanHeadingMask,
     };
   }
 

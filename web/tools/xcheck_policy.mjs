@@ -1,7 +1,7 @@
 // Cross-check of src/live/policy.js (onnxruntime-web, WASM, one thread, SIMD) on the page's
 // pruned public/live/policy.onnx against Python onnxruntime on the full released export.
 // tools/xcheck_policy.py writes 64 random input sets per robot with Python's outputs; this runs
-// the same inputs through Policy.act (the motion interface, the page's only one) and exits 1 if any action differs by more than 1e-4 (or is not a Float32Array
+// the same inputs through Policy.act on the motion and the human interface and exits 1 if any action differs by more than 1e-4 (or is not a Float32Array
 // of 29). Then it times `act` and says whether 3 robots at 50 Hz fit the 20 ms control step.
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
@@ -21,26 +21,32 @@ const policy = await loadPolicy(new Uint8Array(bytes.buffer, bytes.byteOffset, b
 const asInputs = (r, i) => ({
   obs_history: Float32Array.from(r.obs_history[i]),
   goal_motion: Float32Array.from(r.goal_motion[i]),
+  goal_human: Float32Array.from(r.goal_human[i]),
+  human_point_mask: Uint8Array.from(r.human_point_mask[i]),
+  human_frame_mask: Uint8Array.from(r.human_frame_mask[i]),
+  human_heading: Float32Array.from(r.human_heading[i]),
+  human_heading_mask: Uint8Array.of(r.human_heading_mask[i]),
 });
+const OUT = { motion: 'action_motion', full: 'action_human' }; // 'full' runs action_human
 
 let failed = false;
 console.log(`onnxruntime-web ${ort.env.versions?.web ?? ''}, threads ${ort.env.wasm.numThreads}, simd ${ort.env.wasm.simd}`);
 for (let r = 0; r < ref.robots.length; r++) {
   const want = ref.robots[r];
   if (want.name !== live.robots[r].name) throw new Error(`robot order: ${want.name} vs ${live.robots[r].name}`);
-  const diff = { motion: 0 };
+  const diff = { motion: 0, full: 0 };
   for (let i = 0; i < ref.cases; i++) {
     const inputs = asInputs(want, i);
-    for (const iface of ['motion']) {
+    for (const iface of ['motion', 'full']) {
       const got = await policy.act(r, inputs, iface);
       if (!(got instanceof Float32Array) || got.length !== ACTION_DIM) { console.log(`FAIL ${want.name} ${iface}: result is not Float32Array(29)`); failed = true; continue; }
-      const w = want[`action_${iface}`][i];
+      const w = want[OUT[iface]][i];
       for (let j = 0; j < ACTION_DIM; j++) diff[iface] = Math.max(diff[iface], Math.abs(got[j] - w[j]));
     }
   }
-  const ok = diff.motion <= TOL;
+  const ok = diff.motion <= TOL && diff.full <= TOL;
   failed ||= !ok;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${want.name}: max |diff| motion ${diff.motion.toExponential(2)} (${ref.cases} cases, tol ${TOL})`);
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${want.name}: max |diff| motion ${diff.motion.toExponential(2)}, human ${diff.full.toExponential(2)} (${ref.cases} cases, tol ${TOL})`);
 }
 
 // Benchmark: act over cycling robots and cases, one interface at a time, then a 3-robot step.
@@ -50,7 +56,7 @@ const stats = (xs) => {
 };
 const N = 300;
 const fmt = (s) => `mean ${s.mean.toFixed(2)} ms, p95 ${s.p95.toFixed(2)} ms, max ${s.max.toFixed(2)} ms`;
-for (const iface of ['motion']) {
+for (const iface of ['motion', 'full']) {
   const t = [];
   for (let n = 0; n < N; n++) {
     const r = n % ref.robots.length;
@@ -65,7 +71,7 @@ const step = [];
 const all = ref.robots.map((w) => asInputs(w, 0));
 for (let n = 0; n < 150; n++) {
   const t0 = performance.now();
-  for (let r = 0; r < all.length; r++) await policy.act(r, all[r], 'motion');
+  for (let r = 0; r < all.length; r++) await policy.act(r, all[r], n % 2 ? 'motion' : 'full');
   step.push(performance.now() - t0);
 }
 const s3 = stats(step);

@@ -50,7 +50,7 @@ w.onmessage = ({ data: m }) => {
   else if (m.type === 'frame') {
     out.frames++;
     firstFrame ??= m;
-    out.last = { time: m.time, steps: m.steps, rtf: m.rtf, poses: m.poses.length, finitePoses: m.poses.filter(Number.isFinite).length, status: m.status, pelvis: Array.from(m.poses.subarray(7, 10)) };
+    out.last = { time: m.time, steps: m.steps, rtf: m.rtf, poses: m.poses.length, finitePoses: m.poses.filter(Number.isFinite).length, targets: m.targets.length, finiteTargets: m.targets.filter(Number.isFinite).length, status: m.status, pelvis: Array.from(m.poses.subarray(7, 10)) };
   }
 };
 w.postMessage({ type: 'init', base: new URL('live/', document.baseURI).href, clip: 0, iface: 'motion' });
@@ -184,6 +184,7 @@ try {
   const run = async (s) => { await sleep(s * 1000); return state(); };
   const a = await run(SECONDS * 0.4);
   await evaluate("window.__live.send({ type: 'setClip', clip: 9 })");
+  await evaluate("window.__live.send({ type: 'setInterface', iface: 'five' })");
   const b2 = await run(SECONDS * 0.3);
   await evaluate("window.__live.send({ type: 'pause' })");
   await sleep(300);
@@ -195,10 +196,11 @@ try {
   const z = await run(1);
   const fmt = (s) => `t=${s.last.time.toFixed(2)} s steps=${s.last.steps} rtf=${s.last.rtf.toFixed(2)} frames=${s.frames} `
     + s.last.status.map((r) => `${r.name}:${r.phase}/clip${r.clip}->${r.nextClip} falls ${r.falls}`).join(' ');
-  for (const [name, s] of [['after run', a], ['after setClip', b2], ['paused', p1], ['resumed', r1], ['restarted', z]]) console.log(`${name}: ${fmt(s)}`);
+  for (const [name, s] of [['after run', a], ['after setClip+five', b2], ['paused', p1], ['resumed', r1], ['restarted', z]]) console.log(`${name}: ${fmt(s)}`);
   if (a.last.time < SECONDS * 0.4 * 0.3) fail(`sim ran only ${a.last.time} s in ${SECONDS * 0.4} s`);
   if (a.last.poses !== boot.ready.bodies * 7) fail('pose frame size');
   if (a.last.finitePoses !== a.last.poses) fail('poses not all finite after the first step');
+  if (a.last.finiteTargets !== 3 * boot.ready.goalK * 24 * 3) fail('human targets not all finite after the first step');
   if (!b2.last.status.every((r) => r.nextClip === 9)) fail('setClip not applied');
   if (p1.last.steps !== p0.last.steps) fail(`paused but stepping (${p0.last.steps} -> ${p1.last.steps})`);
   if (!(r1.last.steps > p1.last.steps)) fail('resume did not resume');

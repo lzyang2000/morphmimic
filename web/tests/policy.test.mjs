@@ -29,7 +29,7 @@ const fetchFn = (log) => async (url) => {
 
 test('ORT starts on the probe model before the policy is downloaded', async () => {
   const log = [];
-  const robots = [{ name: 'toy', inputs: Object.fromEntries(['obsMean', 'obsVar', 'goalMean', 'goalVar', 'kpMean', 'kpVar', 'morph'].map((k) => [k, [0]])) }];
+  const robots = [{ name: 'toy', inputs: Object.fromEntries(['obsMean', 'obsVar', 'goalMean', 'goalVar', 'humanMean', 'humanVar', 'headingMean', 'headingVar', 'morph'].map((k) => [k, [0]])) }];
   await loadPolicy('policy.onnx', robots, { ort: fakeOrt(log), fetchFn: fetchFn(log) });
   assert.deepEqual(log.slice(0, 4), ['create probe', 'release', 'fetch policy.onnx', 'create 1000 bytes']);
 });

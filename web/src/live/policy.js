@@ -3,26 +3,39 @@
 // and morph from robots.json) and refilled in place every control step, so a step allocates
 // nothing but the 29-float result.
 //
-// The model is the released policy cut down to its motion output (tools/gen_live_assets.py), so
-// `act` runs the motion interface only and returns a fresh Float32Array(29): the canonical
-// action, which PolicyInputs.setAction takes back unchanged.
+// The model is the released policy with both outputs: `act` runs the interface asked for
+// (action_motion on 'motion', action_human on 'full' and 'five', the human interface's slot
+// settings), feeding the step inputs PolicyInputs.step built for it (the other interface's keep
+// their last values: its branch is not read), and returns a fresh Float32Array(29): the
+// canonical action, which PolicyInputs.setAction takes back unchanged.
 //
 // Single thread means the page needs no cross-origin isolation (SharedArrayBuffer) headers.
 // The ORT module and the WASM location are injectable: Node loads them from node_modules, the
 // page passes the URL Vite emits for the .wasm (src/live/ort_browser.js).
 
 export const ACTION_DIM = 29;
-const OUTPUTS = { motion: 'action_motion' };
+const OUTPUTS = { motion: 'action_motion', full: 'action_human', five: 'action_human' };
 // Per-step inputs, in the order PolicyInputs.step returns them, with their element counts and
 // ONNX types.
 const STEP_INPUTS = [
   ['obs_history', 930, 'float32'],
   ['goal_motion', 670, 'float32'],
+  ['goal_human', 2160, 'float32'],
+  ['human_point_mask', 24, 'bool'],
+  ['human_frame_mask', 10, 'bool'],
+  ['human_heading', 60, 'float32'],
+  ['human_heading_mask', 1, 'bool'],
 ];
+// Batch-only inputs: shape [1], not [1, n].
+const BATCH_ONLY = new Set(['human_heading_mask']);
+const MOTION_KEYS = ['obs_history', 'goal_motion'];
+const HUMAN_KEYS = ['obs_history', 'goal_human', 'human_point_mask', 'human_frame_mask', 'human_heading',
+  'human_heading_mask'];
 // robots.json inputs key -> ONNX input name.
 const STATIC_INPUTS = {
   obsMean: 'obs_mean', obsVar: 'obs_var', goalMean: 'goal_mean',
-  goalVar: 'goal_var', morph: 'morph',
+  goalVar: 'goal_var', humanMean: 'human_mean', humanVar: 'human_var', headingMean: 'heading_mean',
+  headingVar: 'heading_var', morph: 'morph',
 };
 
 /** Reads `url` (or a Response) into an ArrayBuffer, calling onProgress(loaded, total) as it comes. */
@@ -64,7 +77,7 @@ export class Policy {
     const step = {};
     for (const [name, n, type] of STEP_INPUTS) {
       const data = type === 'bool' ? new Uint8Array(n) : new Float32Array(n);
-      feeds[name] = new Tensor(type, data, [1, n]);
+      feeds[name] = new Tensor(type, data, BATCH_ONLY.has(name) ? [1] : [1, n]);
       step[name] = data;
     }
     for (const [key, name] of Object.entries(STATIC_INPUTS)) {
@@ -77,18 +90,20 @@ export class Policy {
 
   /**
    * One policy step for robot `robotIdx` (index into the robots passed to loadPolicy).
-   * `inputs` is PolicyInputs.step's result; `iface` is 'motion'.
+   * `inputs` is PolicyInputs.step's result for `iface` ('motion', 'full' or 'five').
    * Resolves to the canonical action, Float32Array[29].
    */
   async act(robotIdx, inputs, iface) {
     const name = OUTPUTS[iface];
-    if (!name) throw new Error(`interface must be motion, got ${iface}`);
+    if (!name) throw new Error(`interface must be motion, full or five, got ${iface}`);
     const slot = this.slots[robotIdx];
     if (!slot) throw new Error(`no robot ${robotIdx}`);
-    for (const [key, n] of STEP_INPUTS) {
+    const keys = iface === 'motion' ? MOTION_KEYS : HUMAN_KEYS;
+    for (const key of keys) {
       const src = inputs[key];
-      if (!src || src.length !== n) throw new Error(`${key}: expected ${n} values, got ${src?.length}`);
-      slot.step[key].set(src);
+      const dst = slot.step[key];
+      if (!src || src.length !== dst.length) throw new Error(`${key}: expected ${dst.length} values, got ${src?.length}`);
+      dst.set(src);
     }
     const out = await this.session.run(slot.feeds, [name]);
     const t = out[name];

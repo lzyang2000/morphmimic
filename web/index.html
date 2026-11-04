@@ -49,8 +49,35 @@
             <span>Restart</span>
           </button>
           <span id="status" class="status" aria-live="polite"><span id="statusText"></span><span id="statusSpeed" aria-hidden="true"></span><span id="statusSlow" class="sr-only"></span></span>
+          <div class="seg" role="radiogroup" aria-label="Interface">
+            <label title="Motion interface: the policy follows the robot's whole-body reference motion">
+              <input type="radio" name="iface" value="motion" checked />
+              <span>Motion</span>
+            </label>
+            <label title="Human interface: the policy follows all 24 joints of the human's motion, with no retargeting">
+              <input type="radio" name="iface" value="full" />
+              <span>Human</span>
+            </label>
+            <label title="Human interface, five points: only the human's pelvis, ankles and wrists, as a VR headset with two controllers and two ankle trackers gives">
+              <input type="radio" name="iface" value="five" />
+              <span>Human, 5 points</span>
+            </label>
+          </div>
         </div>
 
+        <p id="kpNote" class="caption kp-note" hidden>
+          <span class="kp-keys">
+            <span class="kp-key"><i style="background: #ffd91a"></i>Pelvis</span>
+            <span class="kp-key"><i style="background: #ff731a"></i>Left ankle</span>
+            <span class="kp-key"><i style="background: #1acce6"></i>Right ankle</span>
+            <span class="kp-key"><i style="background: #e62640"></i>Left wrist</span>
+            <span class="kp-key"><i style="background: #3366ff"></i>Right wrist</span>
+          </span>
+          <span>The policy sees only these five points of the human's motion.</span>
+        </p>
+        <p id="fullNote" class="caption kp-note" hidden>
+          <span>The policy sees the human's 24 joints (orange), not a robot motion: no retargeting.</span>
+        </p>
         <p id="caption" class="caption">The shared policy runs live in your browser. Drag a robot to push it.</p>
       </main>
     </div>

@@ -23,20 +23,26 @@ deploy/sim2sim/robots/<robot>.json and deploy/vr_teleop/gmr_configs/stand.json. 
                and torque-speed curve SimRobot.dc_torque computes for it; null without), the
                IMU body (its orientation and gyro, as sim_node reads them) and the qpos of the
                neutral stand.
-  robots.json  the policy side (deploy/sim2sim/obs.py, policy_node.py): per robot the ONNX
-               normalisers and morphology vector, joint maps, default pose, action scale, the
+  robots.json  the policy side (deploy/sim2sim/obs.py, policy_node.py, human.py): per robot the
+               ONNX normalisers and morphology vector, joint maps, default pose, action scale, the
                kinematic tree for the anchor and slot-0 orientations, and the stand state;
+               `human`: the human interface's constants (the uniform skeleton's neutral stand
+               frame, the slots of the five-point setting, the SMPL parents);
                and `policy` {file, bytes, sha256} of policy.onnx (the page's download progress
                uses bytes when the server sends no content-length).
-  policy.onnx  the shared policy cut down to its motion output (`action_motion`) and the
-               inputs that reads (policy_node.pruned): the page runs the motion interface only.
-  clips.json   {fps, stateDim: 240, columns: 156, clips: [{id, label, robots: {<robot>:
-               {offset, frames}}}]} in sidebar order, and
+  policy.onnx  the shared policy, copied: both outputs, action_motion (the motion interface)
+               and action_human (the human interface, full or five points).
+  clips.json   {fps, stateDim: 240, columns: 156, humanDim: 168, clips: [{id, label, robots:
+               {<robot>: {offset, frames}}, human: {offset, frames}}]} in sidebar order, and
   clips/<id>.bin  per clip the robots' reference states, float32 little-endian
                [frames, columns], at the byte offsets in clips.json: only the first 156 of the
                240 state columns (joints, joint velocities, body positions and orientations),
                the ones the goals read; the body velocities (156-239) are left out and the
-               page fills them with zeros (src/live/reference.js statesFromClip).
+               page fills them with zeros (src/live/reference.js statesFromClip). Then the
+               clip's human frames for the human interface, float32 [frames, 168] (the 24 SMPL
+               slots' position and orientation, policy_node.human_clip), from
+               <cache>/live/human/<id>.npz (the clip's human sidecar, the same for every robot;
+               frame k goes with the robot clips' frame k).
 """
 
 from __future__ import annotations
@@ -73,6 +79,7 @@ POLICY_ROBOT = {"g1": "g1_amber"}
 STATE_DIM = 240
 # The state columns the goals read (obs.js): everything before the body velocities (LIN = 156).
 CLIP_COLUMNS = 156
+HUMAN_DIM = 24 * 7  # a human frame: per SMPL slot its position, then its orientation (wxyz)
 # The cue loop (CuedClipReference): lead in from the stand, the clip, back to the stand, hold.
 LEAD_IN_S = 2.0
 HOLD_S = 1.0
@@ -263,8 +270,9 @@ def dc_meta(single) -> dict | None:
 def policy_meta(policy_dir: Path) -> dict:
   import onnxruntime as ort
 
+  from deploy.sim2sim.human import HUMAN_POINTS, SMPL_PARENT, human_stand
   from deploy.sim2sim.obs import BODIES, GOAL_K, PROPRIO_DIM
-  from deploy.sim2sim.policy_node import REFERENCE_LEAD
+  from deploy.sim2sim.policy_node import KP_GOAL_VERSION, REFERENCE_LEAD
   from deploy.vr_teleop.constants import STAND_BLEND_S
 
   session = ort.InferenceSession(str(policy_dir / "policy.onnx"), providers=["CPUExecutionProvider"])
@@ -279,11 +287,16 @@ def policy_meta(policy_dir: Path) -> dict:
     runs.add((doc["run"], doc["iteration"], doc["goal_version"]))
     if doc.get("goal_anchor", "reference") != "reference":
       raise ValueError(f"{name}: the page builds reference-anchored motion goals only")
+    if not doc.get("human_interface") or doc.get("kp_goal_version") != KP_GOAL_VERSION:
+      raise ValueError(f"{name}: not an export with the human interface (keypoint goal version"
+                       f" {KP_GOAL_VERSION})")
     r, inp, fk = doc["robot"], doc["inputs"], doc["robot"]["fk"]
     robots.append({
         "name": name,
         "inputs": {"obsMean": inp["obs_mean"], "obsVar": inp["obs_var"],
                    "goalMean": inp["goal_mean"], "goalVar": inp["goal_var"],
+                   "humanMean": inp["human_mean"], "humanVar": inp["human_var"],
+                   "headingMean": inp["heading_mean"], "headingVar": inp["heading_var"],
                    "morph": inp["morph"]},
         "jointNames": r["native_joint_names"],
         "defaultJointPos": r["default_joint_pos"],
@@ -308,11 +321,13 @@ def policy_meta(policy_dir: Path) -> dict:
       "stateDim": STATE_DIM, "referenceLead": REFERENCE_LEAD,
       "fps": FPS,
       "loop": {"leadInS": LEAD_IN_S, "returnS": STAND_BLEND_S, "holdS": HOLD_S},
+      "human": {"stand": human_stand().tolist(), "five": list(HUMAN_POINTS["five"]),
+                "parents": list(SMPL_PARENT)},
       "robots": robots,
   }
 
 
-def pack_clips(clip_dir: Path, out: Path) -> dict:
+def pack_clips(clip_dir: Path, human_dir: Path, out: Path) -> dict:
   (out / "clips").mkdir(parents=True, exist_ok=True)
   clips = []
   for cid, label in CLIPS:
@@ -325,9 +340,19 @@ def pack_clips(clip_dir: Path, out: Path) -> dict:
       entry[name] = {"offset": offset, "frames": int(states.shape[0])}
       blocks.append(b)
       offset += len(b)
+    d = np.load(human_dir / f"{cid}.npz")
+    pos, quat = d["human_pos_w"], d["human_quat_w"]
+    if pos.shape != (len(pos), 24, 3) or quat.shape != (len(pos), 24, 4):
+      raise ValueError(f"human/{cid}: {pos.shape} {quat.shape}")
+    if any(e["frames"] != len(pos) for e in entry.values()):
+      raise ValueError(f"human/{cid}: {len(pos)} frames, robot clips {entry}")
+    frames = np.concatenate([pos, quat], -1).reshape(len(pos), HUMAN_DIM)
+    blocks.append(np.ascontiguousarray(frames, dtype="<f4").tobytes())
+    human = {"offset": offset, "frames": int(len(pos))}
     (out / "clips" / f"{cid}.bin").write_bytes(b"".join(blocks))
-    clips.append({"id": cid, "label": label, "robots": entry})
-  return {"fps": FPS, "stateDim": STATE_DIM, "columns": CLIP_COLUMNS, "clips": clips}
+    clips.append({"id": cid, "label": label, "robots": entry, "human": human})
+  return {"fps": FPS, "stateDim": STATE_DIM, "columns": CLIP_COLUMNS, "humanDim": HUMAN_DIM,
+          "clips": clips}
 
 
 def build(cache: Path = DEFAULT_CACHE, out: Path = DEFAULT_OUT) -> dict:
@@ -343,17 +368,12 @@ def build(cache: Path = DEFAULT_CACHE, out: Path = DEFAULT_OUT) -> dict:
     warnings.simplefilter("ignore")
     (dest / "scene.xml").write_text(spec.to_xml())
   (dest / "scene.json").write_text(json.dumps(scene_meta(model, assets), indent=1))
-  import onnx
-
-  from deploy.sim2sim.policy_node import pruned
-
-  (dest / "policy.onnx").write_bytes(
-      pruned(onnx.load(live_in / "policy" / "policy.onnx"), "action_motion"))
+  shutil.copyfile(live_in / "policy" / "policy.onnx", dest / "policy.onnx")
   meta = policy_meta(live_in / "policy")
   onnx = (dest / "policy.onnx").read_bytes()
   meta["policy"] = {"file": "policy.onnx", "bytes": len(onnx), "sha256": hashlib.sha256(onnx).hexdigest()}
   (dest / "robots.json").write_text(json.dumps(meta))
-  (dest / "clips.json").write_text(json.dumps(pack_clips(live_in / "clips", dest), indent=1))
+  (dest / "clips.json").write_text(json.dumps(pack_clips(live_in / "clips", live_in / "human", dest), indent=1))
 
   files = {str(p.relative_to(dest)): p.stat().st_size
            for p in sorted(dest.rglob("*")) if p.is_file()}

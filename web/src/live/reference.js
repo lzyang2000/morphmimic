@@ -11,6 +11,7 @@ import {
   ANG, GOAL_K, KP_BODY_IDX, LIN, NUM_BODIES, NUM_KP, POS, QUAT, REFERENCE_LEAD, STATE_DIM, heading, quatMul,
   referenceWindow,
 } from './obs.js';
+import { HUMAN_FRAME_DIM, blendHuman, humanHeading, humanPoints, humanWindow, placedHuman } from './human.js';
 
 export { heading };
 
@@ -105,10 +106,19 @@ export function statesFromClip(buffer, { offset, frames }, columns) {
   return out;
 }
 
-function repeat(state, k = GOAL_K) {
-  const out = new Float64Array(k * STATE_DIM);
-  for (let i = 0; i < k; i++) out.set(state.subarray(0, STATE_DIM), i * STATE_DIM);
+/** Frame 0 of `state` (`dim` values per frame) in every one of `k` window frames. */
+function repeat(state, dim = STATE_DIM, k = GOAL_K) {
+  const out = new Float64Array(k * dim);
+  for (let i = 0; i < k; i++) out.set(state.subarray(0, dim), i * dim);
   return out;
+}
+
+/** A clip's human frames go frame for frame with its robot states. */
+function checkHuman(states, human) {
+  const T = states.length / STATE_DIM;
+  if (human.length !== T * HUMAN_FRAME_DIM) {
+    throw new Error(`human frames ${human.length / HUMAN_FRAME_DIM}, robot clip ${T}`);
+  }
 }
 
 /**
@@ -173,11 +183,19 @@ export class StandReference {
  * into the stand, placed where the clip ends. A cue during the motion is ignored.
  *
  * `phase` (after window()) is what that window was: 'stand', 'lead', 'clip' or 'return'.
+ *
+ * With `human` (the clip's human frames [T * 168], frame k with the robot clip's frame k) and
+ * `humanStand` (the uniform skeleton's neutral stand [168]) it plays a human track in step: the
+ * same stand, lead-in, clip and return on the human frames (human_loop.HumanCuedClipReference),
+ * whose window of the same control step is `humanWindow` after window(): the human interface's.
  */
 export class CuedClipReference {
-  constructor(robot, states, { leadInS = 2.0, returnS = 1.0, fps = 50 } = {}) {
+  constructor(robot, states, { leadInS = 2.0, returnS = 1.0, fps = 50, human = null, humanStand = null } = {}) {
     this.robot = robot;
     this.states = states;
+    this.human = human;
+    this.humanStand = humanStand;
+    if (human) checkHuman(states, human);
     this.fps = fps;
     this.leadIn = Math.round(leadInS * fps);
     this.ret = Math.round(returnS * fps);
@@ -197,6 +215,9 @@ export class CuedClipReference {
     this._played = null;
     this._playedFrames = 0;
     this._start = 0;
+    this._humanIdle = null;
+    this._humanPlayed = null;
+    this.humanWindow = null;
     this.phase = 'stand';
   }
 
@@ -212,13 +233,17 @@ export class CuedClipReference {
   }
 
   window(stepId, imuQuat, q) {
+    const human = this.human !== null;
     if (this._idle === null) {
       const yaw = heading(this.robot.slot0Quat(imuQuat, q));
       this._idle = repeat(placed(this.stand, yaw, [0, 0]));
+      if (human) this._humanIdle = repeat(placedHuman(this.humanStand, yaw, [0, 0]), HUMAN_FRAME_DIM);
     }
     if (this._pending) {
       this._pending = false;
-      this._played = this._motion(heading(this.robot.slot0Quat(imuQuat, q)));
+      const yaw = heading(this.robot.slot0Quat(imuQuat, q));
+      this._played = this._motion(yaw);
+      this._humanPlayed = human ? this._humanMotion(yaw) : null;
       this._playedFrames = this._played.length / STATE_DIM;
       this._start = stepId;
     }
@@ -227,14 +252,35 @@ export class CuedClipReference {
       if (frame < this._playedFrames) {
         const clip = this._playedFrames - this.leadIn - this.ret;
         this.phase = frame < this.leadIn ? 'lead' : frame < this.leadIn + clip ? 'clip' : 'return';
+        this.humanWindow = human ? humanWindow(this._humanPlayed, frame) : null;
         return referenceWindow(this._played, frame);
       }
       this._idle = repeat(this._played.subarray((this._playedFrames - 1) * STATE_DIM));
+      if (human) this._humanIdle = repeat(this._humanPlayed.subarray((this._playedFrames - 1) * HUMAN_FRAME_DIM), HUMAN_FRAME_DIM);
       this._played = null;
+      this._humanPlayed = null;
       this._ended(stepId);
     }
     this.phase = 'stand';
+    this.humanWindow = this._humanIdle;
     return this._idle;
+  }
+
+  /** The human track of a motion (human_loop.HumanCuedClipReference._motion): as _motion, on the
+   * human frames, from the human stand window. */
+  _humanMotion(yaw) {
+    const D = HUMAN_FRAME_DIM;
+    const start = this._humanIdle.subarray(0, D);
+    const clip = placedHuman(this.human, yaw, [start[0], start[1]]);
+    const T = clip.length / D;
+    const end = clip.subarray((T - 1) * D);
+    const stand = placedHuman(this.humanStand, humanHeading(end), [end[0], end[1]]);
+    const out = new Float64Array((this.leadIn + T + this.ret) * D);
+    const first = clip.subarray(0, D);
+    for (let i = 0; i < this.leadIn; i++) out.set(blendHuman(start, first, (i + 1) / this.leadIn), i * D);
+    out.set(clip, this.leadIn * D);
+    for (let i = 0; i < this.ret; i++) out.set(blendHuman(end, stand, (i + 1) / this.ret), (this.leadIn + T + i) * D);
+    return out;
   }
 
   /** The motion ended at `stepId`: the window is the stand again. */
@@ -281,9 +327,15 @@ export class LoopReference extends CuedClipReference {
     this.lastWindow = null;
   }
 
-  /** The clip from the next cue on: a cue builds its whole motion (lead-in, clip, return)
-   * when it starts, so the motion playing goes on with the clip it had. */
-  setClip(states) {
+  /** The clip (and its human frames, with a human track) from the next cue on: a cue builds its
+   * whole motion (lead-in, clip, return) when it starts, so the motion playing goes on with the
+   * clip it had. */
+  setClip(states, human = null) {
+    if (this.human !== null) {
+      if (human === null) throw new Error('setClip: this reference has a human track, give the clip\'s human frames');
+      checkHuman(states, human);
+      this.human = human;
+    }
     this.states = states;
   }
 
@@ -294,6 +346,13 @@ export class LoopReference extends CuedClipReference {
 
   _ended(stepId) {
     this.nextCue = stepId + this.hold;
+  }
+
+  /** The human track's 24 slot positions of the last window, [K * 24 * 3] world positions
+   * (frame 0 the current target, then the preview); null before the first step or without a
+   * human track. */
+  humanTargets(out) {
+    return this.humanWindow === null ? null : humanPoints(this.humanWindow, this.origin, out);
   }
 
   /** The five-point targets of the last window, [K * 5 * 3] world positions: frame 0 is the

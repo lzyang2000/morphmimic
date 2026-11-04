@@ -3,7 +3,9 @@ exact policy inputs, for tools/xcheck_live.mjs to reproduce in JS.
 
   uv run --project .. --group export python tools/xcheck_live.py [--ticks N]
 
-Per robot (g1, x2, t2) on the motion interface (the page's only one) it runs the CPU sim2sim from the stand
+Per robot (g1, x2, t2) and interface (motion; full and five: the human interface with that slot
+setting, `tools/human_loop.py`'s HumanCuedClipReference on the clips' human sidecars) it runs the
+CPU sim2sim from the stand
 in one process, as `deploy.run --clip A --from-stand 2 --cue-s 1` does with its two processes:
 `sim_node.SimRobot` in the exported scene (.cache/assets/<robot>.xml; the G1's is
 g1_amber.xml, gen_live_assets.POLICY_ROBOT) starts in the neutral
@@ -22,9 +24,11 @@ CLIP_B: the next cue plays it. The run ends AFTER_CUE ticks into the second cue.
 Per tick the file holds what the robot measured (step id, IMU quaternion and gyro, q, dq, all
 float64), the cue count, the action the policy returned (it is the next tick's last action)
 and the native joint targets made from it,
-the reference phase, the five reference points of the window the policy tracked (pelvis,
-ankles, wrists [K, 5, 3]), and every input the ONNX was fed except the constant normalisers:
-obs_history, goal_motion.
+the reference phase, and every input the ONNX was fed except the constant normalisers:
+obs_history and goal_motion, or on the human interface goal_human, human_point_mask,
+human_frame_mask, human_heading and human_heading_mask. With them: on the motion interface
+the five reference points of the window the policy tracked (pelvis, ankles, wrists [K, 5, 3],
+`kp`), on the human interface the 24 human slot positions of its window ([K, 24, 3], `human`).
 """
 
 from __future__ import annotations
@@ -49,16 +53,17 @@ from deploy.sim2sim.policy_node import CuedClipReference, PolicyRunner  # noqa: 
 from deploy.vr_teleop.constants import STAND_BLEND_S  # noqa: E402
 from deploy.vr_teleop.gmr_retarget import STAND_FILE  # noqa: E402
 from web.tools.gen_live_assets import POLICY_ROBOT  # noqa: E402
+from web.tools.human_loop import HumanCuedClipReference, human_frames  # noqa: E402
 
 ROBOTS = ("g1", "x2", "t2")
-INTERFACES = ("motion",)
+INTERFACES = ("motion", "full", "five")
 # The window's five reference points: pelvis, left/right ankle, left/right wrist (obs.js KP_BODY_IDX).
 KP_BODY_IDX = (0, 3, 6, 10, 13)
 CLIP_A = "dance_basic_padeburee_270_R_loop_001__A324"
 CLIP_B = "victory_dance_robot_dance_180_R_003__A306"
 LEAD_IN_S = 2.0  # --from-stand 2
 FIRST_CUE_S = 1.0  # --cue-s 1
-START_YAW_DEG = {"motion": 0.0}
+START_YAW_DEG = {"motion": 0.0, "full": 137.0, "five": -64.0}
 SWITCH_TICK = 400
 AFTER_CUE = 150
 OUT = WEB / ".cache" / "xcheck_live"
@@ -96,6 +101,10 @@ def _f64(a: np.ndarray) -> str:
   return json.dumps(np.asarray(a, np.float64).ravel().tolist())
 
 
+def _bools(a: np.ndarray) -> str:
+  return json.dumps([int(x) for x in np.asarray(a).ravel()])
+
+
 def deploy_dir() -> Path:
   """policy.onnx from public/live with the export's <robot>.json (the G1's g1_amber.json), in
   one folder."""
@@ -115,8 +124,11 @@ def run(name: str, interface: str, deploy: Path, loop: dict, ticks: int | None) 
   states_a = np.load(clips / f"{CLIP_A}.npz")["states"]
   states_b = np.load(clips / f"{CLIP_B}.npz")["states"]
   fps = round(1.0 / robot.control_dt)
-  reference = CuedClipReference(states_a, robot, LEAD_IN_S)
-  runner = PolicyRunner(deploy, robot.name, reference, interface)
+  human = interface != "motion"
+  reference = (HumanCuedClipReference(human_frames(CLIP_A), robot, LEAD_IN_S) if human
+               else CuedClipReference(states_a, robot, LEAD_IN_S))
+  runner = (PolicyRunner(deploy, robot.name, reference, "human", interface) if human
+            else PolicyRunner(deploy, robot.name, reference, interface))
   session = runner.session = RecordingSession(runner.session)
 
   # The loop's cues: the first at FIRST_CUE_S, the second holdS after the first motion ends
@@ -137,20 +149,29 @@ def run(name: str, interface: str, deploy: Path, loop: dict, ticks: int | None) 
   step, falls = 0, 0
   for tick in range(total):
     if tick == SWITCH_TICK:
-      reference.states = np.asarray(states_b, np.float64)  # Played from the next cue.
+      # Played from the next cue.
+      reference.states = human_frames(CLIP_B) if human else np.asarray(states_b, np.float64)
     quat, gyro, q, dq = sim.measure()
     cues = sum(step >= c for c in cue_steps)
     targets = runner.step(step, quat, gyro, q, dq, cues)
     feeds = session.feeds
     ph = phase(reference, step)
     phases[ph] = phases.get(ph, 0) + 1
-    window_kp = runner.last_ref[:, 58:100].reshape(-1, 14, 3)[:, kp]
+    if human:
+      points = runner.last_ref.reshape(-1, 24, 7)[..., :3]
+      goal = (f'"human":{_f64(points)},"goal_human":{_f32(feeds["goal_human"])},'
+              f'"human_point_mask":{_bools(feeds["human_point_mask"])},'
+              f'"human_frame_mask":{_bools(feeds["human_frame_mask"])},'
+              f'"human_heading":{_f32(feeds["human_heading"])},'
+              f'"human_heading_mask":{_bools(feeds["human_heading_mask"])}')
+    else:
+      window_kp = runner.last_ref[:, 58:100].reshape(-1, 14, 3)[:, kp]
+      goal = f'"kp":{_f64(window_kp)},"goal_motion":{_f32(feeds["goal_motion"])}'
     rows.append(
       "{" + f'"tick":{tick},"step":{step},"cues":{cues},"phase":"{ph}",'
       f'"quat":{_f64(quat)},"gyro":{_f64(gyro)},"q":{_f64(q)},"dq":{_f64(dq)},'
-      f'"action":{_f32(runner.last_action)},"targets":{_f64(targets)},"kp":{_f64(window_kp)},'
-      f'"obs_history":{_f32(feeds["obs_history"])},"goal_motion":{_f32(feeds["goal_motion"])}'
-      + "}"
+      f'"action":{_f32(runner.last_action)},"targets":{_f64(targets)},'
+      f'"obs_history":{_f32(feeds["obs_history"])},{goal}' + "}"
     )
     for _ in range(robot.decimation):
       sim.set_targets(targets)

@@ -1,10 +1,13 @@
 // The live demo page. A Web Worker (src/live/worker.js) runs MuJoCo and the shared policy for the
-// three robots at 50 Hz; this thread only draws the poses it posts (three.js, src/render.js) and
-// the controls, and turns a drag on a robot into a push
-// (src/drag.js).
+// three robots at 50 Hz; this thread only draws the poses it posts (three.js, src/render.js), the
+// human interface's overlays (the five-point targets, src/kpoverlay.js; the full skeleton,
+// src/skeleton.js) and the controls, and turns a drag on a robot into a push (src/drag.js).
 
 import { DragPush } from './drag.js';
 import { StageFade } from './fade.js';
+import { KP_POINTS, KpTrail, anchorTargets } from './keypoints.js';
+import { KeypointOverlay } from './kpoverlay.js';
+import { SkeletonOverlay } from './skeleton.js';
 import { NO_SIMD_MESSAGE, wasmSimdSupported } from './live/simd.js';
 import { Renderer, webglAvailable } from './render.js';
 import './style.css';
@@ -94,15 +97,18 @@ document.addEventListener('visibilitychange', () => {
   onRunChange();
 });
 
-// Optional deep link: ?clip=<sidebar index>. The page's policy has the motion interface only.
+// Optional deep link: ?clip=<sidebar index>&iface=motion|full|five (full, five: the human interface).
 // A debug build (VITE_DEMO_DEBUG=1 npm run build) also takes ?rehome=<m>, the re-home threshold,
 // so a check can force a re-home soon; a normal build drops that code.
+const INTERFACES = ['motion', 'full', 'five'];
+
 function fromQuery(nClips) {
   const q = new URLSearchParams(location.search);
   const c = Number(q.get('clip'));
+  const iface = q.get('iface');
   const out = {
     clip: q.has('clip') && Number.isInteger(c) && c >= 0 && c < nClips ? c : 0,
-    iface: 'motion',
+    iface: INTERFACES.includes(iface) ? iface : 'motion',
   };
   if (import.meta.env.VITE_DEMO_DEBUG === '1' && Number(q.get('rehome')) > 0) out.rehomeSpread = Number(q.get('rehome'));
   return out;
@@ -221,6 +227,23 @@ async function main() {
     updateStatus();
   }
 
+  const ifaceInputs = [...document.querySelectorAll('input[name="iface"]')];
+  function syncInterfaceUi() {
+    for (const inp of ifaceInputs) inp.checked = inp.value === state.iface;
+    $('kpNote').hidden = state.iface !== 'five';
+    $('fullNote').hidden = state.iface !== 'full';
+    overlay?.setVisible(state.iface === 'five');
+    skeleton?.setVisible(state.iface === 'full');
+  }
+  for (const inp of ifaceInputs) {
+    inp.addEventListener('change', () => {
+      if (!inp.checked) return;
+      state.iface = inp.value;
+      syncInterfaceUi();
+      if (state.ready) send({ type: 'setInterface', iface: state.iface });
+    });
+  }
+
   // -------------------------------------------------------------- controls --
   const btnPlay = $('btnPlay');
   const btnRestart = $('btnRestart');
@@ -253,6 +276,7 @@ async function main() {
     if (!state.ready) return;
     drag.cancel();
     send({ type: 'restart' });
+    for (const t of trails) t.clear();
     renderer.resetView();
     fade.clear();
     state.halted = false;
@@ -285,8 +309,32 @@ async function main() {
     setText($('statusSlow'), slow ? ', running below real time' : '');
   }
 
-  // ----------------------------------------------------------------- frames --
+  // --------------------------------------------------------------- overlays --
+  // The worker posts each robot's human targets (24 slots x goalK frames); the five-point overlay
+  // draws the five-point setting's slots with their trails, the skeleton all 24 at frame 0.
+  let overlay = null;
+  let skeleton = null;
   let bodyIds = null; // renderer body -> worker body id
+  let slot0 = null; // per robot, the worker body id of its pelvis
+  let per = 0; // numbers per robot in a frame's targets
+  let five = null; // the five-point setting's slots
+  let goalK = 0;
+  const trails = Array.from({ length: nRobots }, () => new KpTrail());
+  let fivePts = [];
+  let anchored = [];
+  const lastStep = new Array(nRobots).fill(-1);
+  const xy = [0, 0];
+
+  /** Robot r's five-point targets [K * 5 * 3] out of its 24-slot ones [K * 24 * 3]. */
+  function pickFive(all, out) {
+    const n = all.length / (goalK * 3);
+    for (let k = 0; k < goalK; k++) {
+      for (let p = 0; p < KP_POINTS; p++) {
+        for (let j = 0; j < 3; j++) out[(k * KP_POINTS + p) * 3 + j] = all[(k * n + five[p]) * 3 + j];
+      }
+    }
+    return out;
+  }
 
   function onReady(m) {
     const index = new Map(m.bodies.map((n, i) => [n, i]));
@@ -297,12 +345,23 @@ async function main() {
     if (m.robots.length !== nRobots || m.robots.some((r, i) => r.name !== sceneMeta.robots[i].name)) {
       throw new Error('the simulation and the drawn scene list different robots');
     }
+    if (m.human.five.length !== KP_POINTS) throw new Error(`expected ${KP_POINTS} five-point slots, got ${m.human.five.length}`);
+    slot0 = m.robots.map((r) => r.slot0);
+    five = m.human.five;
+    goalK = m.goalK;
+    per = m.goalK * m.human.parents.length * 3;
+    fivePts = m.robots.map(() => new Float64Array(m.goalK * KP_POINTS * 3));
+    anchored = m.robots.map(() => ({ five: new Float64Array(m.goalK * KP_POINTS * 3), full: new Float64Array(per) }));
+    overlay = new KeypointOverlay(renderer.scene, nRobots, m.goalK);
+    skeleton = new SkeletonOverlay(renderer.scene, nRobots, m.human.parents);
     state.ready = true;
     drag.enabled = true;
+    syncInterfaceUi();
     btnPlay.disabled = false;
     btnRestart.disabled = false;
     // What the visitor did while it loaded.
     if (state.selected !== start.clip) selectClip(state.selected);
+    if (state.iface !== start.iface) send({ type: 'setInterface', iface: state.iface });
     onRunChange();
   }
 
@@ -310,8 +369,9 @@ async function main() {
     state.frame = m;
     // A frame from a step still in flight when the visitor paused does not cover the stage again.
     if (fade.frame({ rehoming: m.rehoming && running(), rehomes: m.rehomes })) {
-      // The robots are back on their home stands: the camera jumps there.
+      // The robots are back on their home stands: the camera jumps there, their trails start over.
       drag.cancel(); // every robot is back on its stand: the drag ends (the worker ended the push)
+      for (const t of trails) t.clear();
       renderer.recentre();
     }
     renderer.setPoses(m.poses, bodyIds);
@@ -326,7 +386,26 @@ async function main() {
       state.lastFalls[r] = s.falls;
       const fell = now - state.fellAt[r] < 2500;
       renderer.setLabel(r, ROBOT_NAMES[s.name] ?? s.name, fell ? 'fell, back to the stand' : '');
+      // The overlays: the window anchored at the robot's pelvis, the trail of its frame-0 targets.
+      if (s.stepId < lastStep[r]) trails[r].clear(); // a fall or a restart: its loop starts over
+      lastStep[r] = s.stepId;
+      xy[0] = m.poses[7 * slot0[r]];
+      xy[1] = m.poses[7 * slot0[r] + 1];
+      const all = m.targets.subarray(r * per, (r + 1) * per);
+      const win = anchorTargets(pickFive(all, fivePts[r]), xy, anchored[r].five);
+      const full = anchorTargets(all, xy, anchored[r].full);
+      if (!win || !full) {
+        trails[r].clear();
+        overlay.clearRobot(r);
+        skeleton.clearRobot(r);
+        continue;
+      }
+      trails[r].push(win);
+      overlay.update(r, win, trails[r]);
+      skeleton.update(r, full);
     }
+    overlay.commit();
+    skeleton.commit();
     updateStatus();
     if (!firstFrame) {
       firstFrame = true;
@@ -423,6 +502,7 @@ async function main() {
 
   boot('Loading MuJoCo…', 4);
   showPlaying();
+  syncInterfaceUi();
   send({
     type: 'init', base: new URL('live/', document.baseURI).href, clip: start.clip, iface: start.iface,
     ...(start.rehomeSpread ? { rehomeSpread: start.rehomeSpread } : {}),
@@ -475,7 +555,10 @@ async function main() {
     },
     dragging: () => (drag.active ? drag.drag.robot : null),
     setInterface(iface) {
-      if (iface !== 'motion') throw new Error(`the page's policy has the motion interface only, not ${iface}`);
+      const inp = ifaceInputs.find((x) => x.value === iface);
+      if (!inp) return;
+      inp.checked = true;
+      inp.dispatchEvent(new Event('change'));
     },
     drawn: () => new Promise((r) => frameWaiters.push(r)),
     // Resolves once the demo runs and the selected clip is in memory (tools/shot_site.mjs).

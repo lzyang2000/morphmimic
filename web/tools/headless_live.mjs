@@ -1,6 +1,6 @@
 // Headless check of the live demo's loop in Node: the real MuJoCo WASM model (public/live/scene.xml),
 // the real policy on onnxruntime-web (public/live/policy.onnx), every clip on the motion interface
-// (the page's only one) with the three robots together as in the page, each robot looping (stand, lead-in, clip, return,
+// and the human interface (full and five points) with the three robots together as in the page, each robot looping (stand, lead-in, clip, return,
 // hold) twice. Runs unthrottled and reports, per run and robot:
 //   falls; joint RMS error (rad, the canonical joints against frame 0 of the window the policy
 //   tracked, averaged over control steps, as sim_node.run_teleop measures it) over both loops and
@@ -8,9 +8,11 @@
 //   its current five-point pelvis target); the wall-clock real-time factor (sim s per wall s).
 // With the Python sim2sim summaries of tools/py_from_stand.sh in .cache/headless_live/py/ it puts
 // the joint errors side by side. Exits 1 on a fall on the motion interface, or a motion-interface
-// joint error more than --tol (0.03 rad) from Python's for the same clip and robot.
+// joint error more than --tol (0.03 rad) from Python's for the same clip and robot, or (human
+// interface) more falls in the Python run's steps than Python had. The Python figures:
+// tools/py_from_stand.sh (motion), tools/human_loop.py (full, five).
 //
-//   node tools/headless_live.mjs [--clips 0,3] [--loops 2] [--tol 0.03]
+//   node tools/headless_live.mjs [--clips 0,3] [--ifaces motion,full,five] [--loops 2] [--tol 0.03]
 //   node tools/headless_live.mjs --compare [--ifaces ...]   (the table again, from the last js.json)
 //
 // Writes .cache/headless_live/js.json and .cache/headless_live/table.md.
@@ -24,6 +26,7 @@ import { loadPolicy } from '../src/live/policy.js';
 import { LiveSim } from '../src/live/sim.js';
 import { LiveLoop } from '../src/live/loop.js';
 import { statesFromClip } from '../src/live/reference.js';
+import { humanFromClip } from '../src/live/human.js';
 
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LIVE = join(WEB, 'public/live');
@@ -33,7 +36,7 @@ const opt = (name, def) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : def;
 };
-const IFACES = opt('ifaces', 'motion').split(',');
+const IFACES = opt('ifaces', 'motion,full,five').split(',');
 const LOOPS = Number(opt('loops', 2));
 const TOL = Number(opt('tol', 0.03));
 const json = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -66,7 +69,7 @@ async function runOne(c, iface) {
   const states = robots.robots.map((r) => statesFromClip(ab, clip.robots[r.name], clipIndex.columns));
   sim.resetAll();
   const loop = new LiveLoop(sim, policy, robots.robots, states, {
-    iface, clipId: c, loop: robots.loop, fps, historyLen: robots.historyLen,
+    human: humanFromClip(ab, clip.human), humanStand: Float64Array.from(robots.human.stand), iface, clipId: c, loop: robots.loop, fps, historyLen: robots.historyLen,
   });
   const T = clip.robots.g1.frames;
   const played = Math.round(leadInS * fps) + T + Math.round(returnS * fps);
@@ -142,7 +145,8 @@ for (const iface of IFACES) {
   for (const x of rows.filter((r) => r.iface === iface)) {
     const p = py(x.robot, iface, x.clip);
     const gap = p ? x.jointErrPyWindow - p.joint_err_rms_rad : null;
-    const bad = iface === 'motion' && (x.falls > 0 || (gap != null && Math.abs(gap) > TOL));
+    const extraFalls = iface === 'motion' ? x.falls > 0 : x.fallsInPyWindow > (p ? p.falls : 0);
+    const bad = extraFalls || (gap != null && Math.abs(gap) > TOL);
     failed ||= bad;
     lines.push(`| ${x.label} | ${x.robot} | ${x.falls} | ${f3(x.jointErrPyWindow)} | ${f3(p?.joint_err_rms_rad)} | ${gap == null ? 'n/a' : (gap >= 0 ? '+' : '') + gap.toFixed(3)}${bad ? ' **FAIL**' : ''} | ${p ? p.falls : 'n/a'} | ${f3(x.jointErr)} | ${f3(x.endDrift)} | ${f3(x.travelAlong)} / ${f3(x.travelAcross)} | ${p ? `${f3(p.travel_along_m)} / ${f3(p.travel_across_m)}` : 'n/a'} | ${x.rtf.toFixed(2)} |`);
   }
@@ -152,11 +156,11 @@ const gapsOf = (iface) => rows.filter((x) => x.iface === iface).map((x) => [x, p
   .filter(([, p]) => p).map(([x, p]) => x.jointErrPyWindow - p.joint_err_rms_rad);
 const summary = [
   `runs: ${rows.length / 3} (x 3 robots), sim ${simTotal.toFixed(0)} s in ${totalWall.toFixed(0)} s wall: real-time factor ${(simTotal / totalWall).toFixed(2)} (3 robots, unthrottled)`,
-  `falls: motion ${rows.filter((r) => r.iface === 'motion').reduce((a, r) => a + r.falls, 0)}`,
+  `falls: ${IFACES.map((i) => `${i} ${rows.filter((r) => r.iface === i).reduce((a, r) => a + r.falls, 0)}`).join(', ')}`,
   ...IFACES.map((iface) => {
     const gaps = gapsOf(iface);
     return gaps.length ? `${iface}: joint error JS - Python over ${gaps.length} clip/robot pairs: mean ${mean(gaps).toFixed(4)}, `
-      + `worst |gap| ${Math.max(...gaps.map(Math.abs)).toFixed(4)} rad${iface === 'motion' ? ` (tol ${TOL})` : ' (reported only)'}`
+      + `worst |gap| ${Math.max(...gaps.map(Math.abs)).toFixed(4)} rad (tol ${TOL})`
       : `${iface}: no Python summaries to compare`;
   }),
 ];

@@ -355,9 +355,10 @@ class LivePolicyFilesTest(unittest.TestCase):
       p = gla.POLICY_ROBOT.get(n, n)
       exp = json.loads((LIVE_IN / "policy" / f"{p}.json").read_text())
       baked = json.loads((REPO / f"deploy/sim2sim/robots/{p}.json").read_text())
-      self.assertEqual(set(r["inputs"]), {"obsMean", "obsVar", "goalMean", "goalVar", "morph"})
       for k, ours in (("obs_mean", "obsMean"), ("obs_var", "obsVar"), ("goal_mean", "goalMean"),
-                      ("goal_var", "goalVar"), ("morph", "morph")):
+                      ("goal_var", "goalVar"), ("human_mean", "humanMean"),
+                      ("human_var", "humanVar"), ("heading_mean", "headingMean"),
+                      ("heading_var", "headingVar"), ("morph", "morph")):
         self.assertEqual(r["inputs"][ours], exp["inputs"][k], k)
       src = exp["robot"]
       for b in (src, baked):  # the export's robot entry and the baked constants agree
@@ -378,23 +379,23 @@ class LivePolicyFilesTest(unittest.TestCase):
       self.assertEqual(r["stand"]["state"], STAND[n]["state"])
       self.assertEqual(len(r["stand"]["state"]), 240)
 
-  def test_policy_onnx_is_the_export_cut_to_motion(self):
-    import onnxruntime as ort
+  def test_policy_onnx_is_the_export(self):
+    a = hashlib.sha256(live("policy.onnx").read_bytes()).hexdigest()
+    b = hashlib.sha256((LIVE_IN / "policy" / "policy.onnx").read_bytes()).hexdigest()
+    self.assertEqual(a, b)
 
-    page = ort.InferenceSession(str(live("policy.onnx")), providers=["CPUExecutionProvider"])
-    full = ort.InferenceSession(str(LIVE_IN / "policy" / "policy.onnx"),
-                                providers=["CPUExecutionProvider"])
-    self.assertEqual([o.name for o in page.get_outputs()], ["action_motion"])
-    self.assertEqual(sorted(i.name for i in page.get_inputs()),
-                     ["goal_mean", "goal_motion", "goal_var", "morph", "obs_history", "obs_mean",
-                      "obs_var"])
-    self.assertLessEqual({i.name for i in page.get_inputs()}, {i.name for i in full.get_inputs()})
+  def test_human_constants(self):
+    from deploy.sim2sim.human import HUMAN_POINTS, SMPL_PARENT, human_stand
+
+    h = self.doc["human"]
+    np.testing.assert_array_equal(h["stand"], human_stand())
+    self.assertEqual((h["five"], h["parents"]), (list(HUMAN_POINTS["five"]), list(SMPL_PARENT)))
 
   def test_policy_size_and_hash_recorded(self):
     blob = live("policy.onnx").read_bytes()
     self.assertEqual(self.doc["policy"], {"file": "policy.onnx", "bytes": len(blob),
                                           "sha256": hashlib.sha256(blob).hexdigest()})
-    self.assertGreater(self.doc["policy"]["bytes"], 30_000_000)
+    self.assertGreater(self.doc["policy"]["bytes"], 50_000_000)
 
 
 class LiveClipsTest(unittest.TestCase):
@@ -414,7 +415,13 @@ class LiveClipsTest(unittest.TestCase):
         got = np.frombuffer(blob, "<f4", count=e["frames"] * cols, offset=e["offset"]).reshape(-1, cols)
         np.testing.assert_array_equal(got, states[:, :cols].astype(np.float32))
         end = max(end, e["offset"] + 4 * cols * e["frames"])
-      self.assertEqual(end, len(blob))
+      h = c["human"]
+      self.assertEqual(h["offset"], end)  # after the robots' blocks
+      d = np.load(LIVE_IN / "human" / f"{c['id']}.npz")
+      want = np.concatenate([d["human_pos_w"], d["human_quat_w"]], -1).reshape(-1, 168)
+      got = np.frombuffer(blob, "<f4", count=h["frames"] * 168, offset=h["offset"]).reshape(-1, 168)
+      np.testing.assert_array_equal(got, want.astype(np.float32))
+      self.assertEqual(h["offset"] + 4 * 168 * h["frames"], len(blob))
 
   def test_total_size_reported(self):
     files = sorted(p for p in (_out / "live").rglob("*") if p.is_file())
